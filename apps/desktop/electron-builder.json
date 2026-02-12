@@ -1,0 +1,68 @@
+{
+  "$schema": "https://raw.githubusercontent.com/electron-userland/electron-builder/master/packages/app-builder-lib/scheme.json",
+  "appId": "com.techloom.ledgr",
+  "productName": "Ledgr",
+  "copyright": "Copyright (c) 2024-2026 Johnathen Chilcher",
+  "electronVersion": "28.3.3",
+  "publish": {
+    "provider": "github",
+    "owner": "jchilcher",
+    "repo": "ledgr"
+  },
+  "artifactName": "${productName}-${version}-${arch}.${ext}",
+  "directories": {
+    "buildResources": "build",
+    "output": "release"
+  },
+  "files": [
+    "dist/**/*",
+    "package.json",
+    "!**/node_modules/*/{CHANGELOG.md,README.md,LICENSE,license,License}",
+    "!**/node_modules/*/{test,__tests__,tests,powered-test,example,examples}",
+    "!**/node_modules/.cache",
+    {
+      "from": "../../node_modules/@ledgr/core/dist",
+      "to": "node_modules/@ledgr/core/dist"
+    },
+    {
+      "from": "../../node_modules/@ledgr/core/package.json",
+      "to": "node_modules/@ledgr/core/package.json"
+    },
+    {
+      "from": "src/renderer/splash.html",
+      "to": "renderer/splash.html"
+    }
+  ],
+  "asarUnpack": [
+    "node_modules/better-sqlite3/**/*"
+  ],
+  "npmRebuild": true,
+  "win": {
+    "target": ["nsis"],
+    "icon": "build/icon.ico"
+  },
+  "nsis": {
+    "oneClick": false,
+    "allowToChangeInstallationDirectory": true,
+    "perMachine": false
+  },
+  "mac": {
+    "target": [
+      { "target": "dmg", "arch": ["x64"] },
+      { "target": "dmg", "arch": ["arm64"] }
+    ],
+    "icon": "build/icon.icns",
+    "category": "public.app-category.finance"
+  },
+  "linux": {
+    "target": ["AppImage", "deb"],
+    "icon": "build",
+    "category": "Finance",
+    "synopsis": "Budget smarter, stress less.",
+    "description": "Desktop application for tracking spending, visualizing financial patterns, and forecasting cash flow. All data stored locally."
+  },
+  "deb": {
+    "depends": ["libgtk-3-0", "libnotify4", "libnss3", "libxss1", "libxtst6", "xdg-utils", "libatspi2.0-0", "libuuid1"],
+    "maintainer": "Johnathen Chilcher"
+  }
+}

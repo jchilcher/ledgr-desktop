@@ -1,0 +1,101 @@
+name: Release
+# NOTE: Build jobs use self-hosted runners available only to repository maintainers.
+# PRs are validated by ci.yml on GitHub-hosted runners.
+# macOS builds are disabled — no self-hosted mac runner available.
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build-linux:
+    runs-on: [self-hosted, Linux]
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Remove stale lock file
+        run: node -e "try{require('fs').unlinkSync('package-lock.json')}catch{}"
+
+      - name: Install dependencies
+        run: npm install --ignore-scripts
+
+      - name: Remove postinstall to prevent recursive rebuild
+        run: npm pkg delete scripts.postinstall -w @ledgr/desktop
+
+      - name: Build core package
+        run: npm run build:core
+
+      - name: Build db package
+        run: npm run build:db
+
+      - name: Build and publish Linux
+        run: npm run dist:linux -w @ledgr/desktop
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  build-windows:
+    runs-on: [self-hosted, Windows]
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Remove stale lock file
+        run: node -e "try{require('fs').unlinkSync('package-lock.json')}catch{}"
+
+      - name: Install dependencies
+        run: npm install --ignore-scripts
+
+      - name: Remove postinstall to prevent recursive rebuild
+        run: npm pkg delete scripts.postinstall -w @ledgr/desktop
+
+      - name: Build core package
+        run: npm run build:core
+
+      - name: Build db package
+        run: npm run build:db
+
+      - name: Build and publish Windows
+        run: npm run dist:win -w @ledgr/desktop
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install WiX Toolkit
+        shell: powershell
+        run: |
+          $wixUrl = "https://github.com/wixtoolset/wix3/releases/download/wix3141rtm/wix314-binaries.zip"
+          $wixDir = "$env:RUNNER_TEMP\wix"
+          Invoke-WebRequest -Uri $wixUrl -OutFile "$env:RUNNER_TEMP\wix.zip"
+          Expand-Archive -Path "$env:RUNNER_TEMP\wix.zip" -DestinationPath $wixDir
+          echo "$wixDir" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: Build MSI installer
+        run: npm run dist:msi -w @ledgr/desktop
+
+      - name: Upload MSI to release
+        shell: powershell
+        run: |
+          $version = (node -p "require('./apps/desktop/package.json').version")
+          gh release upload "v$version" "apps/desktop/release/Ledgr-$version.msi" --clobber
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

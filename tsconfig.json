@@ -1,0 +1,11 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true
+  },
+  "references": [
+    { "path": "apps/desktop" },
+    { "path": "packages/core" }
+  ],
+  "include": []
+}

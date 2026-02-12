@@ -1,0 +1,54 @@
+{
+  "name": "ledgr-desktop",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Budget smarter, stress less.",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "build": "npm run build:core && npm run build:db && npm run build:desktop",
+    "build:core": "npm run build -w @ledgr/core",
+    "build:db": "npm run build -w @ledgr/db",
+    "build:desktop": "npm run build -w @ledgr/desktop",
+    "pack": "npm run build:core && npm run build:db && npm run pack -w @ledgr/desktop",
+    "dist": "npm run build:core && npm run build:db && npm run dist -w @ledgr/desktop",
+    "dist:win": "npm run build:core && npm run build:db && npm run dist:win -w @ledgr/desktop",
+    "dist:mac": "npm run build:core && npm run build:db && npm run dist:mac -w @ledgr/desktop",
+    "dist:linux": "npm run build:core && npm run build:db && npm run dist:linux -w @ledgr/desktop",
+    "dev": "npm run dev -w @ledgr/desktop",
+    "dev:desktop": "npm run dev -w @ledgr/desktop",
+    "start": "npm run start -w @ledgr/desktop",
+    "test": "npm run test -w @ledgr/desktop",
+    "test:e2e": "playwright test",
+    "test:all": "npm run test && npm run test:e2e",
+    "lint": "npm run lint -w @ledgr/desktop",
+    "lint:fix": "npm run lint:fix -w @ledgr/desktop",
+    "clean": "rm -rf node_modules packages/*/node_modules apps/*/node_modules packages/*/dist apps/*/dist"
+  },
+  "keywords": [
+    "budget",
+    "finance",
+    "electron",
+    "monorepo",
+    "privacy"
+  ],
+  "author": "Johnathen Chilcher (TechLoom)",
+  "license": "AGPL-3.0-only",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/jchilcher/ledgr.git"
+  },
+  "bugs": {
+    "url": "https://github.com/jchilcher/ledgr/issues"
+  },
+  "homepage": "https://github.com/jchilcher/ledgr#readme",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.40.0",
+    "typescript": "^5.3.3"
+  }
+}

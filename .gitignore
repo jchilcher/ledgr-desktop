@@ -1,0 +1,66 @@
+# Dependencies
+node_modules/
+
+# Build outputs
+dist/
+build/
+# But include icon assets and NSIS installer script
+!apps/desktop/build/
+apps/desktop/build/*
+!apps/desktop/build/icon.png
+!apps/desktop/build/icon.icns
+!apps/desktop/build/icon.ico
+!apps/desktop/build/icons/
+!apps/desktop/build/installer.nsh
+
+# Test coverage
+coverage/
+
+# E2E test results
+test-results/
+playwright-report/
+
+# Database files
+*.db
+*.db-shm
+*.db-wal
+
+# Environment variables
+.env
+.env.local
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs
+*.log
+npm-debug.log*
+
+# Internal planning/tool config
+.planning/
+.claude/
+CLAUDE.md
+BUGS-PROMPT.md
+
+# Dev artifacts
+feedback.txt
+progress.txt
+ralph-loop.sh
+test-output.log
+
+# Electron release builds
+apps/desktop/release/
+
+.github/copilot-instructions.md
+
+# Secrets and credentials
+*.key
+*.pem
+*.env.*
