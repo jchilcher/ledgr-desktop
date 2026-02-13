@@ -38,12 +38,12 @@
   "license": "AGPL-3.0-only",
   "repository": {
     "type": "git",
-    "url": "https://github.com/jchilcher/ledgr.git"
+    "url": "https://github.com/jchilcher/ledgr-desktop.git"
   },
   "bugs": {
-    "url": "https://github.com/jchilcher/ledgr/issues"
+    "url": "https://github.com/jchilcher/ledgr-desktop/issues"
   },
-  "homepage": "https://github.com/jchilcher/ledgr#readme",
+  "homepage": "https://github.com/jchilcher/ledgr-desktop#readme",
   "engines": {
     "node": ">=18.0.0"
   },
