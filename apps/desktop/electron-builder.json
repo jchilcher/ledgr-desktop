@@ -7,7 +7,7 @@
   "publish": {
     "provider": "github",
     "owner": "jchilcher",
-    "repo": "ledgr"
+    "repo": "ledgr-desktop"
   },
   "artifactName": "${productName}-${version}-${arch}.${ext}",
   "directories": {
