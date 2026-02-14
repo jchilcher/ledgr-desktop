@@ -7,6 +7,7 @@ All notable changes to Ledgr will be documented in this file.
 ### Fixed
 
 - **Password protection** — App closed immediately after entering password on startup instead of opening the main window.
+- **Lock screen** — Users without a password saw a password prompt they couldn't get past; now shows a direct Unlock button instead.
 
 ### Added
 

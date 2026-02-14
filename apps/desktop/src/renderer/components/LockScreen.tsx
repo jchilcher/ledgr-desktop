@@ -26,7 +26,7 @@ export default function LockScreen({ isStartup, onUnlock, members, onMemberUnloc
   }, [allMembers, selectedMember]);
 
   useEffect(() => {
-    if (!showMemberPicker) {
+    if (!showMemberPicker && selectedMember?.hasPassword) {
       inputRef.current?.focus();
     }
   }, [showMemberPicker, selectedMember]);
@@ -56,6 +56,29 @@ export default function LockScreen({ isStartup, onUnlock, members, onMemberUnloc
       return;
     }
     setSelectedMember(member);
+  };
+
+  const handlePasswordlessUnlock = async () => {
+    if (!selectedMember) return;
+    setIsLoading(true);
+    setError('');
+    try {
+      const unlockFn = isStartup
+        ? window.api.security.unlockMemberStartup
+        : window.api.security.unlockMember;
+      const success = await unlockFn(selectedMember.userId, null);
+      if (success) {
+        onMemberUnlock?.(selectedMember.userId);
+        onUnlock();
+      } else {
+        setError('Failed to unlock. Please try again.');
+      }
+    } catch (err) {
+      setError('An error occurred. Please try again.');
+      console.error('Unlock error:', err);
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -142,7 +165,7 @@ export default function LockScreen({ isStartup, onUnlock, members, onMemberUnloc
             </div>
           </div>
         ) : (
-          <form onSubmit={handleSubmit} style={styles.form}>
+          <form onSubmit={selectedMember?.hasPassword ? handleSubmit : (e) => { e.preventDefault(); handlePasswordlessUnlock(); }} style={styles.form}>
             {selectedMember && (
               <div style={styles.selectedMemberHeader}>
                 <div
@@ -157,35 +180,54 @@ export default function LockScreen({ isStartup, onUnlock, members, onMemberUnloc
               </div>
             )}
 
-            <input
-              ref={inputRef}
-              type="password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              onKeyDown={handleKeyDown}
-              placeholder="Enter password"
-              disabled={isLoading}
-              style={styles.input}
-            />
+            {selectedMember && !selectedMember.hasPassword ? (
+              <>
+                {error && <div style={styles.error}>{error}</div>}
 
-            {error && <div style={styles.error}>{error}</div>}
+                <button
+                  type="submit"
+                  disabled={isLoading}
+                  style={{
+                    ...styles.button,
+                    ...(isLoading ? styles.buttonDisabled : {}),
+                  }}
+                >
+                  {isLoading ? 'Unlocking...' : 'Unlock'}
+                </button>
+              </>
+            ) : (
+              <>
+                <input
+                  ref={inputRef}
+                  type="password"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  onKeyDown={handleKeyDown}
+                  placeholder="Enter password"
+                  disabled={isLoading}
+                  style={styles.input}
+                />
 
-            {isStartup && !selectedMember && (
-              <div style={styles.warning}>
-                If you&apos;ve forgotten your password, your data cannot be recovered.
-              </div>
+                {error && <div style={styles.error}>{error}</div>}
+
+                {isStartup && !selectedMember && (
+                  <div style={styles.warning}>
+                    If you&apos;ve forgotten your password, your data cannot be recovered.
+                  </div>
+                )}
+
+                <button
+                  type="submit"
+                  disabled={isLoading}
+                  style={{
+                    ...styles.button,
+                    ...(isLoading ? styles.buttonDisabled : {}),
+                  }}
+                >
+                  {isLoading ? 'Verifying...' : 'Unlock'}
+                </button>
+              </>
             )}
-
-            <button
-              type="submit"
-              disabled={isLoading}
-              style={{
-                ...styles.button,
-                ...(isLoading ? styles.buttonDisabled : {}),
-              }}
-            >
-              {isLoading ? 'Verifying...' : 'Unlock'}
-            </button>
 
             {selectedMember && allMembers.length >= 2 && (
               <button
