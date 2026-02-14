@@ -104,6 +104,12 @@ ledgr/
 └── package.json          # Monorepo workspace configuration
 ```
 
+## Support
+
+If you find Ledgr useful, consider buying me a coffee:
+
+[![Buy Me A Coffee](https://img.shields.io/badge/Buy%20Me%20A%20Coffee-ffdd00?style=flat&logo=buy-me-a-coffee&logoColor=black)](https://buymeacoffee.com/jchilcher)
+
 ## Contributing
 
 See [CONTRIBUTING.md](.github/CONTRIBUTING.md) for guidelines on reporting bugs, suggesting features, and submitting pull requests.
