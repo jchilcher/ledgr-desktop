@@ -1,5 +1,5 @@
-import React, { useState, useEffect } from 'react';
-import { BudgetGoal, BudgetPeriod, Category, BudgetSuggestion } from '../../shared/types';
+import React, { useState, useEffect, useMemo } from 'react';
+import { BudgetGoal, BudgetPeriod, BudgetMode, Category, BudgetSuggestion, RecurringItem } from '../../shared/types';
 import { useInlineEdit } from '../hooks/useInlineEdit';
 import { EditableNumber, EditableSelect, EditableCheckbox } from './inline-edit';
 import EmptyState from './EmptyState';
@@ -36,6 +36,16 @@ export default function BudgetGoals() {
   const [incomeOverride, setIncomeOverride] = useState<number | null>(null);
   const [editingIncome, setEditingIncome] = useState(false);
   const [incomeEditValue, setIncomeEditValue] = useState('');
+
+  // Flex budget state
+  const [budgetMode, setBudgetMode] = useState<BudgetMode>('category');
+  const [flexTarget, setFlexTarget] = useState(0);
+  const [fixedCategoryIds, setFixedCategoryIds] = useState<string[]>([]);
+  const [recurringItems, setRecurringItems] = useState<RecurringItem[]>([]);
+  const [editingFlexTarget, setEditingFlexTarget] = useState(false);
+  const [flexTargetEditValue, setFlexTargetEditValue] = useState('');
+  const [showFixedModal, setShowFixedModal] = useState(false);
+  const [pendingFixedIds, setPendingFixedIds] = useState<string[]>([]);
 
   // Form state for Add New
   const [formCategoryId, setFormCategoryId] = useState('');
@@ -102,15 +112,34 @@ export default function BudgetGoals() {
   const loadData = async () => {
     try {
       setLoading(true);
-      const [allGoals, allCategories, spendingData, incomeResult, savedOverride] = await Promise.all([
+      const [allGoals, allCategories, spendingData, incomeResult, savedOverride, savedMode, savedFlexTarget, savedFixedIds, activeRecurring] = await Promise.all([
         window.api.budgetGoals.getAll(),
         window.api.categories.getAll(),
         window.api.analytics.getSpendingByCategory(getStartOfPeriod('monthly').toISOString()),
         window.api.incomeAnalysis.analyze().catch(() => null),
         window.api.budgetIncome.getOverride().catch(() => null),
+        window.api.budgetSettings.getMode().catch(() => 'category'),
+        window.api.budgetSettings.getFlexTarget().catch(() => 0),
+        window.api.budgetSettings.getFixedCategoryIds().catch(() => []),
+        window.api.recurring.getActive().catch(() => []),
       ]);
       setGoals(allGoals);
       setCategories(allCategories.filter(c => c.type === 'expense'));
+      setBudgetMode(savedMode as BudgetMode);
+      setFlexTarget(savedFlexTarget);
+      setRecurringItems(activeRecurring.filter((r: RecurringItem) => r.amount < 0 && r.categoryId));
+
+      // Auto-populate fixed category IDs from recurring items if user hasn't manually configured any
+      const recurringCategoryIds = [...new Set(
+        activeRecurring
+          .filter((r: RecurringItem) => r.amount < 0 && r.categoryId)
+          .map((r: RecurringItem) => r.categoryId as string)
+      )];
+      if (savedFixedIds.length === 0 && recurringCategoryIds.length > 0) {
+        setFixedCategoryIds(recurringCategoryIds);
+      } else {
+        setFixedCategoryIds(savedFixedIds);
+      }
 
       const autoIncome = incomeResult?.summary?.totalMonthlyIncome ?? 0;
       setIncomeStreams(incomeResult?.streams ?? []);
@@ -258,11 +287,6 @@ export default function BudgetGoals() {
     return spending.get(categoryId) || 0;
   };
 
-  const getProgressPercentage = (goal: BudgetGoal): number => {
-    const spent = getSpentAmount(goal.categoryId);
-    return Math.min((spent / goal.amount) * 100, 100);
-  };
-
   const getProgressColor = (percentage: number): string => {
     if (percentage >= 100) return 'var(--color-danger)';
     if (percentage >= 80) return 'var(--color-warning)';
@@ -290,20 +314,169 @@ export default function BudgetGoals() {
       ? 'var(--color-warning)'
       : 'var(--color-success)';
 
+  // Group budget state: track which group cards are expanded
+  const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
+
+  const toggleGroup = (goalId: string) => {
+    setExpandedGroups(prev => {
+      const next = new Set(prev);
+      if (next.has(goalId)) {
+        next.delete(goalId);
+      } else {
+        next.add(goalId);
+      }
+      return next;
+    });
+  };
+
+  // Build parent-to-children map for group budget support
+  const childrenByParent = useMemo(() => {
+    const map = new Map<string, Category[]>();
+    for (const cat of categories) {
+      if (cat.parentId) {
+        const existing = map.get(cat.parentId) || [];
+        existing.push(cat);
+        map.set(cat.parentId, existing);
+      }
+    }
+    return map;
+  }, [categories]);
+
+  const isParentCategory = (categoryId: string): boolean => {
+    return childrenByParent.has(categoryId);
+  };
+
+  // Get aggregated spending for a group (parent + all children)
+  const getGroupSpentAmount = (parentCategoryId: string): number => {
+    const children = childrenByParent.get(parentCategoryId) || [];
+    let total = spending.get(parentCategoryId) || 0;
+    for (const child of children) {
+      total += spending.get(child.id) || 0;
+    }
+    return total;
+  };
+
+  // Smart rollover: calculate per-month info for non-monthly budgets
+  const getRolloverInfo = (goal: BudgetGoal) => {
+    if (goal.period === 'monthly') return null;
+
+    const now = new Date();
+
+    if (goal.period === 'yearly') {
+      const perMonth = goal.amount / 12;
+      const monthOfYear = now.getMonth() + 1; // 1-based
+      const accumulatedBudget = perMonth * monthOfYear;
+      const spent = isParentCategory(goal.categoryId)
+        ? getGroupSpentAmount(goal.categoryId)
+        : getSpentAmount(goal.categoryId);
+      const rollover = accumulatedBudget - spent;
+      const availableThisMonth = perMonth + Math.max(rollover - perMonth, 0);
+
+      return {
+        perMonth,
+        currentPeriodIndex: monthOfYear,
+        totalPeriods: 12,
+        periodLabel: 'year',
+        totalBudget: goal.amount,
+        accumulatedBudget,
+        spent,
+        availableThisMonth,
+        rolloverFromPrevious: Math.max(accumulatedBudget - perMonth - (spent > accumulatedBudget - perMonth ? accumulatedBudget - perMonth : spent), 0),
+      };
+    }
+
+    // Weekly: show per-day info is not useful, skip for weekly
+    return null;
+  };
+
   const categoriesWithGoals = new Set(goals.map(g => g.categoryId));
   const availableCategories = categories.filter(c => !categoriesWithGoals.has(c.id));
 
-  const categoryOptions = categories.map(cat => ({
-    value: cat.id,
-    label: cat.name,
-    icon: cat.icon,
-  }));
+  // Build category options with hierarchy indicators
+  const categoryOptions = useMemo(() => {
+    const parentCats = categories.filter(c => !c.parentId);
+    const result: Array<{ value: string; label: string; icon?: string }> = [];
+
+    for (const parent of parentCats) {
+      const children = childrenByParent.get(parent.id);
+      const childCount = children?.length ?? 0;
+      result.push({
+        value: parent.id,
+        label: childCount > 0 ? `${parent.name} (${childCount} subcategories)` : parent.name,
+        icon: parent.icon,
+      });
+      if (children) {
+        for (const child of children) {
+          result.push({
+            value: child.id,
+            label: `  ${child.name}`,
+            icon: child.icon,
+          });
+        }
+      }
+    }
+
+    // Include orphan children (parentId set but parent not in expense categories)
+    const parentIds = new Set(parentCats.map(c => c.id));
+    for (const cat of categories) {
+      if (cat.parentId && !parentIds.has(cat.parentId) && !result.some(r => r.value === cat.id)) {
+        result.push({ value: cat.id, label: cat.name, icon: cat.icon });
+      }
+    }
+
+    return result;
+  }, [categories, childrenByParent]);
+
+  const handleModeChange = async (mode: BudgetMode) => {
+    setBudgetMode(mode);
+    await window.api.budgetSettings.setMode(mode);
+  };
+
+  const handleSaveFlexTarget = async (value: string) => {
+    const val = parseFloat(value);
+    if (!isNaN(val) && val >= 0) {
+      const cents = Math.round(val * 100);
+      await window.api.budgetSettings.setFlexTarget(cents);
+      setFlexTarget(cents);
+      setEditingFlexTarget(false);
+    }
+  };
+
+  const handleSaveFixedCategories = async (ids: string[]) => {
+    await window.api.budgetSettings.setFixedCategoryIds(ids);
+    setFixedCategoryIds(ids);
+    setShowFixedModal(false);
+  };
+
+  // Expected monthly amounts from recurring items, grouped by category
+  const recurringByCategory = useMemo(() => {
+    const map = new Map<string, { expected: number; items: RecurringItem[] }>();
+    for (const item of recurringItems) {
+      if (!item.categoryId) continue;
+      const entry = map.get(item.categoryId) || { expected: 0, items: [] };
+      const monthlyAmount = Math.abs(frequencyToMonthly(item.amount, item.frequency));
+      entry.expected += Math.round(monthlyAmount);
+      entry.items.push(item);
+      map.set(item.categoryId, entry);
+    }
+    return map;
+  }, [recurringItems]);
+
+  const fixedCategories = categories.filter(c => fixedCategoryIds.includes(c.id));
+  const totalFixedExpected = fixedCategories.reduce((sum, c) => sum + (recurringByCategory.get(c.id)?.expected || 0), 0);
+  const totalFixedSpending = fixedCategories.reduce((sum, c) => sum + (spending.get(c.id) || 0), 0);
+  const totalFlexSpending = categories
+    .filter(c => !fixedCategoryIds.includes(c.id))
+    .reduce((sum, c) => sum + (spending.get(c.id) || 0), 0);
+  // Use expected amounts from recurring items when available, otherwise fall back to actual spending
+  const effectiveFixed = totalFixedExpected > 0 ? totalFixedExpected : totalFixedSpending;
+  const flexPercent = flexTarget > 0 ? Math.min((totalFlexSpending / flexTarget) * 100, 100) : 0;
+  const flexRemaining = flexTarget - totalFlexSpending;
+  const flexRemainingIncome = totalMonthlyIncome - effectiveFixed - flexTarget;
 
   const renderCard = (goal: BudgetGoal) => {
     const isEditing = inlineEdit.editingId === goal.id;
     const spent = getSpentAmount(goal.categoryId);
-    const percentage = getProgressPercentage(goal);
-    const remaining = goal.amount - spent;
 
     if (isEditing) {
       const editData = inlineEdit.editData as EditFormData;
@@ -414,6 +587,14 @@ export default function BudgetGoals() {
     }
 
     // View mode
+    const isGroup = isParentCategory(goal.categoryId);
+    const childCategories = isGroup ? (childrenByParent.get(goal.categoryId) || []) : [];
+    const groupSpent = isGroup ? getGroupSpentAmount(goal.categoryId) : spent;
+    const groupPercentage = Math.min((groupSpent / goal.amount) * 100, 100);
+    const groupRemaining = goal.amount - groupSpent;
+    const isExpanded = expandedGroups.has(goal.id);
+    const rolloverInfo = getRolloverInfo(goal);
+
     return (
       <div
         key={goal.id}
@@ -426,7 +607,21 @@ export default function BudgetGoals() {
       >
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '8px' }}>
           <div>
-            <h4 style={{ margin: '0 0 4px 0' }}>{getCategoryName(goal.categoryId)}</h4>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <h4 style={{ margin: '0 0 4px 0' }}>{getCategoryName(goal.categoryId)}</h4>
+              {isGroup && (
+                <span style={{
+                  fontSize: '11px',
+                  padding: '1px 6px',
+                  borderRadius: 'var(--radius-sm)',
+                  backgroundColor: 'var(--color-primary)',
+                  color: '#fff',
+                  fontWeight: 500,
+                }}>
+                  Group
+                </span>
+              )}
+            </div>
             <span style={{ fontSize: '13px', color: 'var(--color-text-muted)' }}>
               {goal.period.charAt(0).toUpperCase() + goal.period.slice(1)} budget
               {goal.rolloverEnabled && ' (Rollover enabled)'}
@@ -450,18 +645,45 @@ export default function BudgetGoals() {
           </div>
         </div>
 
+        {/* Smart Rollover Info for non-monthly budgets */}
+        {rolloverInfo && (
+          <div style={{
+            marginBottom: '8px',
+            padding: '6px 10px',
+            backgroundColor: 'var(--color-surface-alt)',
+            borderRadius: 'var(--radius-sm)',
+            fontSize: '13px',
+            color: 'var(--color-text-muted)',
+          }}>
+            {goal.period === 'yearly' && (
+              <span>
+                Budget: ${(rolloverInfo.totalBudget / 100).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}/year
+                {' \u2022 '}${(rolloverInfo.perMonth / 100).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}/month
+                {' \u2022 '}Month {rolloverInfo.currentPeriodIndex} of {rolloverInfo.totalPeriods}
+                {rolloverInfo.rolloverFromPrevious > 0 && (
+                  <span style={{ color: 'var(--color-primary)', fontWeight: 500 }}>
+                    {' \u2022 '}${(rolloverInfo.availableThisMonth / 100).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} available this month
+                    {' (includes $'}{(rolloverInfo.rolloverFromPrevious / 100).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} rollover)
+                  </span>
+                )}
+              </span>
+            )}
+          </div>
+        )}
+
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
           <span style={{ fontWeight: 600 }}>
-            ${(spent / 100).toFixed(2)} / ${(goal.amount / 100).toFixed(2)}
+            ${(groupSpent / 100).toFixed(2)} / ${(goal.amount / 100).toFixed(2)}
           </span>
           <span style={{
             fontWeight: 500,
-            color: remaining >= 0 ? 'var(--color-success)' : 'var(--color-danger)',
+            color: groupRemaining >= 0 ? 'var(--color-success)' : 'var(--color-danger)',
           }}>
-            {remaining >= 0 ? `$${(remaining / 100).toFixed(2)} left` : `$${(Math.abs(remaining) / 100).toFixed(2)} over`}
+            {groupRemaining >= 0 ? `$${(groupRemaining / 100).toFixed(2)} left` : `$${(Math.abs(groupRemaining) / 100).toFixed(2)} over`}
           </span>
         </div>
 
+        {/* Main progress bar */}
         <div style={{
           height: '8px',
           backgroundColor: 'var(--color-surface-alt)',
@@ -470,11 +692,110 @@ export default function BudgetGoals() {
         }}>
           <div style={{
             height: '100%',
-            width: `${percentage}%`,
-            backgroundColor: getProgressColor(percentage),
+            width: `${groupPercentage}%`,
+            backgroundColor: getProgressColor(groupPercentage),
             transition: 'width 0.3s',
           }} />
         </div>
+
+        {/* Rollover accumulation bar for yearly budgets */}
+        {rolloverInfo && goal.period === 'yearly' && (
+          <div style={{ marginTop: '4px' }}>
+            <div style={{
+              height: '4px',
+              backgroundColor: 'var(--color-surface-alt)',
+              borderRadius: 'var(--radius-full)',
+              overflow: 'hidden',
+            }}>
+              <div style={{
+                height: '100%',
+                width: `${Math.min((rolloverInfo.spent / rolloverInfo.accumulatedBudget) * 100, 100)}%`,
+                backgroundColor: 'var(--color-primary)',
+                opacity: 0.5,
+                transition: 'width 0.3s',
+              }} />
+            </div>
+            <div style={{ fontSize: '11px', color: 'var(--color-text-muted)', marginTop: '2px', textAlign: 'right' }}>
+              ${(rolloverInfo.spent / 100).toFixed(2)} of ${(rolloverInfo.accumulatedBudget / 100).toFixed(2)} accumulated budget used
+            </div>
+          </div>
+        )}
+
+        {/* Group budget: collapsible child breakdown */}
+        {isGroup && childCategories.length > 0 && (
+          <div style={{ marginTop: '12px' }}>
+            <button
+              onClick={() => toggleGroup(goal.id)}
+              style={{
+                background: 'none',
+                border: 'none',
+                cursor: 'pointer',
+                color: 'var(--color-primary)',
+                fontSize: '13px',
+                padding: '4px 0',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '4px',
+              }}
+            >
+              <span style={{
+                display: 'inline-block',
+                transition: 'transform 0.2s',
+                transform: isExpanded ? 'rotate(90deg)' : 'rotate(0deg)',
+              }}>
+                &#9654;
+              </span>
+              {isExpanded ? 'Hide' : 'Show'} breakdown ({childCategories.length} categories)
+            </button>
+
+            {isExpanded && (
+              <div style={{ marginTop: '8px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                {/* Parent category's own spending */}
+                {(spending.get(goal.categoryId) || 0) > 0 && (
+                  <div style={{ padding: '6px 8px', borderRadius: 'var(--radius-sm)', backgroundColor: 'var(--color-surface-alt)' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '4px' }}>
+                      <span style={{ fontSize: '13px' }}>{getCategoryName(goal.categoryId)} (direct)</span>
+                      <span style={{ fontSize: '13px', fontWeight: 500, fontVariantNumeric: 'tabular-nums' }}>
+                        ${((spending.get(goal.categoryId) || 0) / 100).toFixed(2)}
+                      </span>
+                    </div>
+                    <div style={{ height: '4px', backgroundColor: 'var(--color-border)', borderRadius: 'var(--radius-full)', overflow: 'hidden' }}>
+                      <div style={{
+                        height: '100%',
+                        width: `${goal.amount > 0 ? Math.min(((spending.get(goal.categoryId) || 0) / goal.amount) * 100, 100) : 0}%`,
+                        backgroundColor: 'var(--color-text-muted)',
+                        transition: 'width 0.3s',
+                      }} />
+                    </div>
+                  </div>
+                )}
+                {/* Child categories */}
+                {childCategories.map(child => {
+                  const childSpent = spending.get(child.id) || 0;
+                  const childPct = goal.amount > 0 ? Math.min((childSpent / goal.amount) * 100, 100) : 0;
+                  return (
+                    <div key={child.id} style={{ padding: '6px 8px', borderRadius: 'var(--radius-sm)', backgroundColor: 'var(--color-surface-alt)' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '4px' }}>
+                        <span style={{ fontSize: '13px' }}>{child.icon || ''} {child.name}</span>
+                        <span style={{ fontSize: '13px', fontWeight: 500, fontVariantNumeric: 'tabular-nums' }}>
+                          ${(childSpent / 100).toFixed(2)}
+                        </span>
+                      </div>
+                      <div style={{ height: '4px', backgroundColor: 'var(--color-border)', borderRadius: 'var(--radius-full)', overflow: 'hidden' }}>
+                        <div style={{
+                          height: '100%',
+                          width: `${childPct}%`,
+                          backgroundColor: child.color || 'var(--color-primary)',
+                          transition: 'width 0.3s',
+                        }} />
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        )}
 
         {/* Budget Adjustment Suggestion */}
         {suggestions.has(goal.categoryId) && suggestions.get(goal.categoryId)!.type !== 'new_budget' && (
@@ -520,17 +841,429 @@ export default function BudgetGoals() {
     <div className="budget-goals">
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
         <h3 style={{ margin: 0 }}>Budget Goals</h3>
-        <button
-          onClick={() => {
-            inlineEdit.cancelEdit();
-            setShowForm(!showForm);
-          }}
-          className="btn btn-primary"
-          disabled={loading}
-        >
-          {showForm ? 'Cancel' : 'Add Budget'}
-        </button>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+          <div style={{
+            display: 'inline-flex',
+            borderRadius: 'var(--radius-md)',
+            border: '1px solid var(--color-border)',
+            overflow: 'hidden',
+          }}>
+            <button
+              onClick={() => handleModeChange('category')}
+              style={{
+                padding: '6px 14px',
+                fontSize: '13px',
+                fontWeight: 500,
+                border: 'none',
+                cursor: 'pointer',
+                backgroundColor: budgetMode === 'category' ? 'var(--color-primary)' : 'var(--color-surface)',
+                color: budgetMode === 'category' ? '#fff' : 'var(--color-text)',
+              }}
+            >
+              Category Budgets
+            </button>
+            <button
+              onClick={() => handleModeChange('flex')}
+              style={{
+                padding: '6px 14px',
+                fontSize: '13px',
+                fontWeight: 500,
+                border: 'none',
+                borderLeft: '1px solid var(--color-border)',
+                cursor: 'pointer',
+                backgroundColor: budgetMode === 'flex' ? 'var(--color-primary)' : 'var(--color-surface)',
+                color: budgetMode === 'flex' ? '#fff' : 'var(--color-text)',
+              }}
+            >
+              Flex Budget
+            </button>
+          </div>
+          {budgetMode === 'category' && (
+            <button
+              onClick={() => {
+                inlineEdit.cancelEdit();
+                setShowForm(!showForm);
+              }}
+              className="btn btn-primary"
+              disabled={loading}
+            >
+              {showForm ? 'Cancel' : 'Add Budget'}
+            </button>
+          )}
+        </div>
       </div>
+
+      {/* Fixed Categories Modal */}
+      {showFixedModal && (
+        <div style={{
+          position: 'fixed',
+          top: 0, left: 0, right: 0, bottom: 0,
+          backgroundColor: 'rgba(0,0,0,0.5)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          zIndex: 1000,
+        }}>
+          <div style={{
+            backgroundColor: 'var(--color-bg)',
+            borderRadius: 'var(--radius-lg)',
+            padding: '24px',
+            maxWidth: '400px',
+            width: '90%',
+            maxHeight: '70vh',
+            display: 'flex',
+            flexDirection: 'column',
+          }}>
+            <h4 style={{ margin: '0 0 16px 0' }}>Manage Fixed Expenses</h4>
+            <p style={{ margin: '0 0 12px 0', fontSize: '13px', color: 'var(--color-text-muted)' }}>
+              Select categories that are fixed monthly expenses. Categories with recurring items are shown first.
+            </p>
+            <div style={{ flex: 1, overflowY: 'auto', marginBottom: '16px' }}>
+              {[...categories].sort((a, b) => {
+                const aHasRecurring = recurringByCategory.has(a.id) ? 1 : 0;
+                const bHasRecurring = recurringByCategory.has(b.id) ? 1 : 0;
+                return bHasRecurring - aHasRecurring;
+              }).map(cat => {
+                const recurring = recurringByCategory.get(cat.id);
+                return (
+                <label
+                  key={cat.id}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '8px',
+                    padding: '8px 4px',
+                    cursor: 'pointer',
+                    borderBottom: '1px solid var(--color-border)',
+                  }}
+                >
+                  <input
+                    type="checkbox"
+                    checked={pendingFixedIds.includes(cat.id)}
+                    onChange={(e) => {
+                      if (e.target.checked) {
+                        setPendingFixedIds([...pendingFixedIds, cat.id]);
+                      } else {
+                        setPendingFixedIds(pendingFixedIds.filter(id => id !== cat.id));
+                      }
+                    }}
+                  />
+                  <span style={{ flex: 1 }}>{cat.icon} {cat.name}</span>
+                  {recurring && (
+                    <span style={{ fontSize: '11px', color: 'var(--color-text-muted)' }}>
+                      {recurring.items.length} recurring &middot; ${(recurring.expected / 100).toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}/mo
+                    </span>
+                  )}
+                </label>
+                );
+              })}
+            </div>
+            <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end' }}>
+              <button
+                onClick={() => setShowFixedModal(false)}
+                className="btn btn-secondary"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => handleSaveFixedCategories(pendingFixedIds)}
+                className="btn btn-primary"
+              >
+                Save
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {budgetMode === 'flex' ? (
+        /* ==================== Flex Budget View ==================== */
+        <div>
+          {/* Fixed Expenses Section */}
+          <div style={{
+            marginBottom: '16px',
+            padding: '16px',
+            backgroundColor: 'var(--color-surface)',
+            border: '1px solid var(--color-border)',
+            borderRadius: 'var(--radius-md)',
+          }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
+              <h4 style={{ margin: 0 }}>Fixed Expenses</h4>
+              <button
+                onClick={() => {
+                  setPendingFixedIds([...fixedCategoryIds]);
+                  setShowFixedModal(true);
+                }}
+                className="btn btn-secondary"
+                style={{ padding: '4px 12px', fontSize: '13px' }}
+              >
+                Manage
+              </button>
+            </div>
+
+            {fixedCategories.length === 0 ? (
+              <p style={{ color: 'var(--color-text-muted)', fontSize: '14px', margin: 0 }}>
+                No fixed expense categories selected. Click "Manage" to tag categories as fixed.
+                {recurringItems.length > 0 && (
+                  <> You have recurring items that could be used — click "Manage" to select their categories.</>
+                )}
+              </p>
+            ) : (
+              <div>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr auto auto', gap: '8px', fontSize: '11px', color: 'var(--color-text-muted)', padding: '0 0 6px 0', borderBottom: '1px solid var(--color-border)' }}>
+                  <span>Category</span>
+                  <span style={{ textAlign: 'right' }}>Expected</span>
+                  <span style={{ textAlign: 'right' }}>Spent</span>
+                </div>
+                {fixedCategories.map(cat => {
+                  const catSpent = spending.get(cat.id) || 0;
+                  const catExpected = recurringByCategory.get(cat.id)?.expected || 0;
+                  return (
+                    <div
+                      key={cat.id}
+                      style={{
+                        display: 'grid',
+                        gridTemplateColumns: '1fr auto auto',
+                        gap: '8px',
+                        alignItems: 'center',
+                        padding: '8px 0',
+                        borderBottom: '1px solid var(--color-border)',
+                      }}
+                    >
+                      <span>{cat.icon} {cat.name}</span>
+                      <span style={{ fontVariantNumeric: 'tabular-nums', color: 'var(--color-text-muted)', fontSize: '13px', textAlign: 'right' }}>
+                        {catExpected > 0
+                          ? `$${(catExpected / 100).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+                          : '—'}
+                      </span>
+                      <span style={{ fontWeight: 500, fontVariantNumeric: 'tabular-nums', textAlign: 'right' }}>
+                        ${(catSpent / 100).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                      </span>
+                    </div>
+                  );
+                })}
+                <div style={{
+                  display: 'grid',
+                  gridTemplateColumns: '1fr auto auto',
+                  gap: '8px',
+                  alignItems: 'center',
+                  padding: '10px 0 0 0',
+                  fontWeight: 600,
+                }}>
+                  <span>Total Fixed</span>
+                  <span style={{ fontVariantNumeric: 'tabular-nums', color: 'var(--color-text-muted)', fontSize: '13px', textAlign: 'right' }}>
+                    {totalFixedExpected > 0
+                      ? `$${(totalFixedExpected / 100).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+                      : '—'}
+                  </span>
+                  <span style={{ fontVariantNumeric: 'tabular-nums', textAlign: 'right' }}>
+                    ${(totalFixedSpending / 100).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                  </span>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Flex Budget Bar */}
+          <div style={{
+            marginBottom: '16px',
+            padding: '16px',
+            backgroundColor: 'var(--color-surface)',
+            border: '1px solid var(--color-border)',
+            borderRadius: 'var(--radius-md)',
+          }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
+              <h4 style={{ margin: 0 }}>Flex Budget</h4>
+              {editingFlexTarget ? (
+                <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                  <span style={{ fontWeight: 600 }}>$</span>
+                  <input
+                    type="text"
+                    value={flexTargetEditValue}
+                    onChange={(e) => setFlexTargetEditValue(e.target.value)}
+                    autoFocus
+                    style={{
+                      width: '120px',
+                      fontSize: '14px',
+                      padding: '4px 8px',
+                      borderRadius: 'var(--radius-sm)',
+                      border: '1px solid var(--color-border)',
+                      textAlign: 'right',
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') handleSaveFlexTarget(flexTargetEditValue);
+                      if (e.key === 'Escape') setEditingFlexTarget(false);
+                    }}
+                  />
+                  <button
+                    className="btn btn-primary"
+                    style={{ fontSize: '12px', padding: '4px 10px' }}
+                    onClick={() => handleSaveFlexTarget(flexTargetEditValue)}
+                  >
+                    Save
+                  </button>
+                  <button
+                    className="btn btn-secondary"
+                    style={{ fontSize: '12px', padding: '4px 10px' }}
+                    onClick={() => setEditingFlexTarget(false)}
+                  >
+                    Cancel
+                  </button>
+                </div>
+              ) : (
+                <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                  <span style={{ fontWeight: 600 }}>
+                    Target: ${(flexTarget / 100).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                  </span>
+                  <button
+                    onClick={() => {
+                      setFlexTargetEditValue((flexTarget / 100).toFixed(2));
+                      setEditingFlexTarget(true);
+                    }}
+                    style={{
+                      background: 'none',
+                      border: 'none',
+                      color: 'var(--color-primary)',
+                      cursor: 'pointer',
+                      fontSize: '12px',
+                      padding: '2px 6px',
+                      borderRadius: 'var(--radius-sm)',
+                    }}
+                  >
+                    Edit
+                  </button>
+                </div>
+              )}
+            </div>
+
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+              <span style={{ fontWeight: 600 }}>
+                Spent ${(totalFlexSpending / 100).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} of ${(flexTarget / 100).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} flex budget
+              </span>
+              <span style={{
+                fontWeight: 500,
+                color: flexRemaining >= 0 ? 'var(--color-success)' : 'var(--color-danger)',
+              }}>
+                {flexTarget > 0
+                  ? `${flexPercent.toFixed(0)}%`
+                  : 'Set a target'}
+              </span>
+            </div>
+
+            <div style={{
+              height: '12px',
+              backgroundColor: 'var(--color-surface-alt)',
+              borderRadius: 'var(--radius-full)',
+              overflow: 'hidden',
+            }}>
+              <div style={{
+                height: '100%',
+                width: `${flexPercent}%`,
+                backgroundColor: flexPercent >= 100
+                  ? 'var(--color-danger)'
+                  : flexPercent >= 80
+                    ? 'var(--color-warning)'
+                    : 'var(--color-success)',
+                transition: 'width 0.3s',
+              }} />
+            </div>
+
+            <div style={{
+              marginTop: '8px',
+              fontSize: '14px',
+              fontWeight: 500,
+              color: flexRemaining >= 0 ? 'var(--color-success)' : 'var(--color-danger)',
+              textAlign: 'right',
+            }}>
+              {flexRemaining >= 0
+                ? `$${(flexRemaining / 100).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} remaining`
+                : `$${(Math.abs(flexRemaining) / 100).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} over budget`}
+            </div>
+          </div>
+
+          {/* Remaining Summary */}
+          {totalMonthlyIncome > 0 && (
+            <div style={{
+              padding: '16px',
+              backgroundColor: 'var(--color-surface)',
+              border: '1px solid var(--color-border)',
+              borderRadius: 'var(--radius-md)',
+            }}>
+              <h4 style={{ margin: '0 0 12px 0' }}>Monthly Summary</h4>
+              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '16px' }}>
+                <div style={{ textAlign: 'center', flex: 1 }}>
+                  <div style={{ fontSize: '13px', color: 'var(--color-text-muted)', marginBottom: '4px' }}>Income</div>
+                  <div style={{ fontSize: '18px', fontWeight: 600 }}>
+                    ${(totalMonthlyIncome / 100).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                  </div>
+                </div>
+                <div style={{ textAlign: 'center', flex: 1 }}>
+                  <div style={{ fontSize: '13px', color: 'var(--color-text-muted)', marginBottom: '4px' }}>Fixed</div>
+                  <div style={{ fontSize: '18px', fontWeight: 600 }}>
+                    ${(effectiveFixed / 100).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                  </div>
+                </div>
+                <div style={{ textAlign: 'center', flex: 1 }}>
+                  <div style={{ fontSize: '13px', color: 'var(--color-text-muted)', marginBottom: '4px' }}>Flex Target</div>
+                  <div style={{ fontSize: '18px', fontWeight: 600 }}>
+                    ${(flexTarget / 100).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                  </div>
+                </div>
+                <div style={{ textAlign: 'center', flex: 1 }}>
+                  <div style={{ fontSize: '13px', color: 'var(--color-text-muted)', marginBottom: '4px' }}>Remaining</div>
+                  <div style={{
+                    fontSize: '18px',
+                    fontWeight: 600,
+                    color: flexRemainingIncome >= 0 ? 'var(--color-success)' : 'var(--color-danger)',
+                  }}>
+                    {flexRemainingIncome >= 0 ? '' : '-'}${(Math.abs(flexRemainingIncome) / 100).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                  </div>
+                </div>
+              </div>
+
+              {/* Three-bucket bar */}
+              {totalMonthlyIncome > 0 && (
+                <div>
+                  <div style={{
+                    height: '8px',
+                    backgroundColor: 'var(--color-surface-alt)',
+                    borderRadius: 'var(--radius-full)',
+                    overflow: 'hidden',
+                    display: 'flex',
+                  }}>
+                    <div style={{
+                      height: '100%',
+                      width: `${Math.min((effectiveFixed / totalMonthlyIncome) * 100, 100)}%`,
+                      backgroundColor: 'var(--color-primary)',
+                    }} />
+                    <div style={{
+                      height: '100%',
+                      width: `${Math.min((flexTarget / totalMonthlyIncome) * 100, 100 - Math.min((effectiveFixed / totalMonthlyIncome) * 100, 100))}%`,
+                      backgroundColor: 'var(--color-warning)',
+                    }} />
+                  </div>
+                  <div style={{ display: 'flex', gap: '16px', marginTop: '8px', fontSize: '12px', color: 'var(--color-text-muted)' }}>
+                    <span style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                      <span style={{ width: '8px', height: '8px', borderRadius: '50%', backgroundColor: 'var(--color-primary)', display: 'inline-block' }} />
+                      Fixed ({totalMonthlyIncome > 0 ? ((effectiveFixed / totalMonthlyIncome) * 100).toFixed(0) : 0}%)
+                    </span>
+                    <span style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                      <span style={{ width: '8px', height: '8px', borderRadius: '50%', backgroundColor: 'var(--color-warning)', display: 'inline-block' }} />
+                      Flex ({totalMonthlyIncome > 0 ? ((flexTarget / totalMonthlyIncome) * 100).toFixed(0) : 0}%)
+                    </span>
+                    <span style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                      <span style={{ width: '8px', height: '8px', borderRadius: '50%', backgroundColor: 'var(--color-success)', display: 'inline-block' }} />
+                      Remaining ({totalMonthlyIncome > 0 ? (Math.max(flexRemainingIncome, 0) / totalMonthlyIncome * 100).toFixed(0) : 0}%)
+                    </span>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      ) : (
+      /* ==================== Category Budget View (existing) ==================== */
+      <div>
 
       {showForm && (
         <form onSubmit={handleSubmit} style={{ marginBottom: '24px', padding: '16px', backgroundColor: 'var(--color-surface-alt)', borderRadius: 'var(--radius-md)' }}>
@@ -550,11 +1283,42 @@ export default function BudgetGoals() {
                 style={{ width: '100%' }}
               >
                 <option value="">Select category...</option>
-                {availableCategories.map((cat) => (
-                  <option key={cat.id} value={cat.id}>
-                    {cat.icon} {cat.name}
-                  </option>
-                ))}
+                {(() => {
+                  const parentCats = availableCategories.filter(c => !c.parentId);
+                  const opts: React.ReactNode[] = [];
+                  for (const parent of parentCats) {
+                    const children = childrenByParent.get(parent.id);
+                    const childCount = children?.filter(ch => availableCategories.some(ac => ac.id === ch.id)).length ?? 0;
+                    opts.push(
+                      <option key={parent.id} value={parent.id}>
+                        {parent.icon} {parent.name}{childCount > 0 ? ` (${childCount} subcategories)` : ''}
+                      </option>
+                    );
+                    if (children) {
+                      for (const child of children) {
+                        if (availableCategories.some(ac => ac.id === child.id)) {
+                          opts.push(
+                            <option key={child.id} value={child.id}>
+                              {'  '}{child.icon} {child.name}
+                            </option>
+                          );
+                        }
+                      }
+                    }
+                  }
+                  // Orphan children
+                  const parentIds = new Set(parentCats.map(c => c.id));
+                  for (const cat of availableCategories) {
+                    if (cat.parentId && !parentIds.has(cat.parentId) && !opts.some((o: any) => o?.key === cat.id)) {
+                      opts.push(
+                        <option key={cat.id} value={cat.id}>
+                          {cat.icon} {cat.name}
+                        </option>
+                      );
+                    }
+                  }
+                  return opts;
+                })()}
               </select>
             </div>
 
@@ -905,6 +1669,8 @@ export default function BudgetGoals() {
         <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
           {goals.map(renderCard)}
         </div>
+      )}
+      </div>
       )}
     </div>
   );

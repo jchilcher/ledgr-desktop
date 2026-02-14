@@ -33,6 +33,8 @@ import {
   NetWorthSnapshot,
   AssetValueHistory,
   LiabilityValueHistory,
+  EncryptableEntityType,
+  SharePermissions,
 } from '../shared/types';
 import { NetWorthProjectionConfig } from '@ledgr/core';
 
@@ -40,6 +42,17 @@ import { NetWorthProjectionConfig } from '@ledgr/core';
 // ipcRenderer without exposing the entire object
 contextBridge.exposeInMainWorld('api', {
   version: process.versions.electron,
+
+  // Users API (household support)
+  users: {
+    getAll: () => ipcRenderer.invoke('users:getAll'),
+    getById: (id: string) => ipcRenderer.invoke('users:getById', id),
+    getDefault: () => ipcRenderer.invoke('users:getDefault'),
+    create: (name: string, color: string) => ipcRenderer.invoke('users:create', name, color),
+    update: (id: string, updates: Partial<{ name: string; color: string; isDefault: boolean }>) =>
+      ipcRenderer.invoke('users:update', id, updates),
+    delete: (id: string) => ipcRenderer.invoke('users:delete', id),
+  },
 
   // Account API
   accounts: {
@@ -283,6 +296,8 @@ contextBridge.exposeInMainWorld('api', {
       ipcRenderer.invoke('recurringPayments:getAll', recurringItemId),
     getById: (id: string) => ipcRenderer.invoke('recurringPayments:getById', id),
     getUpcoming: (days?: number) => ipcRenderer.invoke('recurringPayments:getUpcoming', days),
+    getByDateRange: (startDate: string, endDate: string) =>
+      ipcRenderer.invoke('recurringPayments:getByDateRange', startDate, endDate),
     create: (payment: Omit<RecurringPayment, 'id' | 'createdAt'>) =>
       ipcRenderer.invoke('recurringPayments:create', payment),
     update: (id: string, updates: Partial<Omit<RecurringPayment, 'id' | 'createdAt' | 'recurringItemId'>>) =>
@@ -1061,10 +1076,32 @@ contextBridge.exposeInMainWorld('api', {
     openExternal: (url: string) => ipcRenderer.invoke('shell:openExternal', url),
   },
 
+  // ==================== Transaction Attachments ====================
+  attachments: {
+    getByTransaction: (transactionId: string) =>
+      ipcRenderer.invoke('attachments:getByTransaction', transactionId),
+    getById: (id: string) => ipcRenderer.invoke('attachments:getById', id),
+    add: (transactionId: string, sourceFilePath: string) =>
+      ipcRenderer.invoke('attachments:add', transactionId, sourceFilePath),
+    delete: (id: string) => ipcRenderer.invoke('attachments:delete', id),
+    open: (id: string) => ipcRenderer.invoke('attachments:open', id),
+    getCountsByTransactionIds: (transactionIds: string[]) =>
+      ipcRenderer.invoke('attachments:getCountsByTransactionIds', transactionIds),
+    selectFile: (): Promise<{ canceled: boolean; filePaths?: string[] }> =>
+      ipcRenderer.invoke('attachments:selectFile'),
+  },
+
   // ==================== Onboarding ====================
   onboarding: {
     getStatus: (): Promise<string> => ipcRenderer.invoke('onboarding:getStatus'),
     setComplete: (value: string): Promise<void> => ipcRenderer.invoke('onboarding:setComplete', value),
+  },
+
+  // ==================== Tutorials ====================
+  tutorials: {
+    isCompleted: (toolId: string): Promise<string> => ipcRenderer.invoke('tutorials:isCompleted', toolId),
+    markCompleted: (toolId: string): Promise<void> => ipcRenderer.invoke('tutorials:markCompleted', toolId),
+    resetAll: (): Promise<void> => ipcRenderer.invoke('tutorials:resetAll'),
   },
 
   // ==================== Find in Page ====================
@@ -1100,19 +1137,35 @@ contextBridge.exposeInMainWorld('api', {
     getCandidates: (expenseId: string) => ipcRenderer.invoke('reimbursements:getCandidates', expenseId),
   },
 
+  // ==================== Saved Reports ====================
+  savedReports: {
+    getAll: () => ipcRenderer.invoke('savedReports:getAll'),
+    getById: (id: string) => ipcRenderer.invoke('savedReports:getById', id),
+    create: (name: string, config: string) =>
+      ipcRenderer.invoke('savedReports:create', name, config),
+    update: (id: string, updates: Partial<{ name: string; config: string; lastAccessedAt: number }>) =>
+      ipcRenderer.invoke('savedReports:update', id, updates),
+    delete: (id: string) => ipcRenderer.invoke('savedReports:delete', id),
+    getRecent: (limit?: number) => ipcRenderer.invoke('savedReports:getRecent', limit),
+  },
+
   // ==================== Security ====================
   security: {
-    getStatus: () => ipcRenderer.invoke('security:getStatus'),
-    enable: (password: string, autoLockMinutes: number) =>
-      ipcRenderer.invoke('security:enable', password, autoLockMinutes),
-    disable: (password: string) => ipcRenderer.invoke('security:disable', password),
-    changePassword: (currentPassword: string, newPassword: string) =>
-      ipcRenderer.invoke('security:changePassword', currentPassword, newPassword),
-    updateAutoLock: (minutes: number) => ipcRenderer.invoke('security:updateAutoLock', minutes),
     lock: () => ipcRenderer.invoke('security:lock'),
-    unlock: (password: string) => ipcRenderer.invoke('security:unlock', password),
-    unlockStartup: (password: string) => ipcRenderer.invoke('security:unlockStartup', password),
+    getAutoLock: () => ipcRenderer.invoke('security:getAutoLock'),
+    setAutoLock: (minutes: number) => ipcRenderer.invoke('security:setAutoLock', minutes),
     heartbeat: () => ipcRenderer.invoke('security:heartbeat'),
+    getMemberAuthStatus: () => ipcRenderer.invoke('security:getMemberAuthStatus'),
+    enableMemberPassword: (userId: string, password: string) =>
+      ipcRenderer.invoke('security:enableMemberPassword', userId, password),
+    disableMemberPassword: (userId: string, currentPassword: string) =>
+      ipcRenderer.invoke('security:disableMemberPassword', userId, currentPassword),
+    changeMemberPassword: (userId: string, oldPassword: string, newPassword: string) =>
+      ipcRenderer.invoke('security:changeMemberPassword', userId, oldPassword, newPassword),
+    unlockMember: (userId: string, password: string | null) =>
+      ipcRenderer.invoke('security:unlockMember', userId, password),
+    unlockMemberStartup: (userId: string, password: string | null) =>
+      ipcRenderer.invoke('security:unlockMemberStartup', userId, password),
     onLock: (callback: () => void) => {
       const handler = () => callback();
       ipcRenderer.on('app:lock', handler);
@@ -1125,12 +1178,36 @@ contextBridge.exposeInMainWorld('api', {
     },
   },
 
+  // ==================== Budget Settings (Flex Mode) ====================
+  budgetSettings: {
+    getMode: (): Promise<string> =>
+      ipcRenderer.invoke('budgetSettings:getMode'),
+    setMode: (mode: string): Promise<void> =>
+      ipcRenderer.invoke('budgetSettings:setMode', mode),
+    getFlexTarget: (): Promise<number> =>
+      ipcRenderer.invoke('budgetSettings:getFlexTarget'),
+    setFlexTarget: (amountCents: number): Promise<void> =>
+      ipcRenderer.invoke('budgetSettings:setFlexTarget', amountCents),
+    getFixedCategoryIds: (): Promise<string[]> =>
+      ipcRenderer.invoke('budgetSettings:getFixedCategoryIds'),
+    setFixedCategoryIds: (ids: string[]): Promise<void> =>
+      ipcRenderer.invoke('budgetSettings:setFixedCategoryIds', ids),
+  },
+
   // ==================== Budget Income Override ====================
   budgetIncome: {
     getOverride: (): Promise<number | null> =>
       ipcRenderer.invoke('budgetIncome:getOverride'),
     setOverride: (amountCents: number | null): Promise<void> =>
       ipcRenderer.invoke('budgetIncome:setOverride', amountCents),
+  },
+
+  // ==================== Dashboard Layout ====================
+  dashboardLayout: {
+    get: (): Promise<string> => ipcRenderer.invoke('dashboardLayout:get'),
+    set: (layout: string): Promise<void> => ipcRenderer.invoke('dashboardLayout:set', layout),
+    getWidgets: (): Promise<string> => ipcRenderer.invoke('dashboardWidgets:get'),
+    setWidgets: (widgets: string): Promise<void> => ipcRenderer.invoke('dashboardWidgets:set', widgets),
   },
 
   // ==================== Phase 10: Database Export/Import ====================
@@ -1147,5 +1224,25 @@ contextBridge.exposeInMainWorld('api', {
       ipcRenderer.on('menu:import-database', () => callback());
       return () => ipcRenderer.removeAllListeners('menu:import-database');
     },
+  },
+
+  // ==================== Sharing ====================
+  sharing: {
+    createShare: (entityId: string, entityType: EncryptableEntityType, recipientId: string, permissions: SharePermissions) =>
+      ipcRenderer.invoke('sharing:createShare', entityId, entityType, recipientId, permissions),
+    revokeShare: (shareId: string) =>
+      ipcRenderer.invoke('sharing:revokeShare', shareId),
+    updatePermissions: (shareId: string, permissions: SharePermissions) =>
+      ipcRenderer.invoke('sharing:updatePermissions', shareId, permissions),
+    getSharesForEntity: (entityId: string, entityType: EncryptableEntityType) =>
+      ipcRenderer.invoke('sharing:getSharesForEntity', entityId, entityType),
+    getSharedWithMe: () =>
+      ipcRenderer.invoke('sharing:getSharedWithMe'),
+    getDefaults: (ownerId: string, entityType?: EncryptableEntityType) =>
+      ipcRenderer.invoke('sharing:getDefaults', ownerId, entityType),
+    setDefault: (ownerId: string, recipientId: string, entityType: EncryptableEntityType, permissions: SharePermissions) =>
+      ipcRenderer.invoke('sharing:setDefault', ownerId, recipientId, entityType, permissions),
+    removeDefault: (defaultId: string) =>
+      ipcRenderer.invoke('sharing:removeDefault', defaultId),
   },
 });

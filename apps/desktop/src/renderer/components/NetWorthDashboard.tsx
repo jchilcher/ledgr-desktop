@@ -1,11 +1,13 @@
 import { useNetWorthCalculation, useNetWorthChangeSummary } from '../hooks/useNetWorth';
 import { NetWorthBreakdown } from './NetWorthBreakdown';
+import { useHousehold } from '../contexts/HouseholdContext';
 
 interface NetWorthDashboardProps {
   className?: string;
 }
 
 export function NetWorthDashboard({ className }: NetWorthDashboardProps) {
+  const { householdFilter } = useHousehold();
   const { calculation, loading, error, refetch } = useNetWorthCalculation();
   const { summary: monthSummary } = useNetWorthChangeSummary('month');
 
@@ -160,6 +162,22 @@ export function NetWorthDashboard({ className }: NetWorthDashboardProps) {
           </div>
         </div>
       </div>
+
+      {/* Household filter notice */}
+      {householdFilter !== 'all' && (
+        <div
+          style={{
+            padding: '12px 16px',
+            backgroundColor: 'var(--color-warning-bg)',
+            border: '1px solid var(--color-warning)',
+            borderRadius: 'var(--radius-md)',
+            fontSize: '14px',
+            color: 'var(--color-text)',
+          }}
+        >
+          <strong>Note:</strong> Net worth calculations reflect filtered household data. Manual assets and liabilities may be filtered based on ownership.
+        </div>
+      )}
 
       {/* Breakdown component */}
       <NetWorthBreakdown calculation={calculation} />

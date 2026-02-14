@@ -2,6 +2,16 @@
 
 All notable changes to Ledgr will be documented in this file.
 
+## [1.0.1] - 2026-02-13
+
+### Fixed
+
+- **Password protection** — App closed immediately after entering password on startup instead of opening the main window.
+
+### Changed
+
+- **Reports** — Merged "Cash Flow" and "Cash Flow Forecast" into a single "Cash Flow" tab with sub-tabs for Forecast and Flow Diagram.
+
 ## [1.0.0] - 2026-02-12
 
 Initial public release.

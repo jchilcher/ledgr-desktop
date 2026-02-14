@@ -1,7 +1,9 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import { Account, Category, RecurringTransaction, RecurringFrequency } from '../../shared/types';
+import { useHousehold } from '../contexts/HouseholdContext';
 
 const RecurringTransactions: React.FC = () => {
+  const { householdFilter, filterByOwnership } = useHousehold();
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
   const [recurringTransactions, setRecurringTransactions] = useState<RecurringTransaction[]>([]);
@@ -25,14 +27,17 @@ const RecurringTransactions: React.FC = () => {
         window.api.categories.getAll(),
         window.api.recurringTransactions.getAll()
       ]);
-      setAccounts(allAccounts);
+      const visibleAccounts = filterByOwnership(allAccounts);
+      const visibleAccountIds = new Set(visibleAccounts.map(a => a.id));
+      const visibleRecurring = allRecurring.filter(r => visibleAccountIds.has(r.accountId));
+      setAccounts(visibleAccounts);
       setCategories(allCategories);
-      setRecurringTransactions(allRecurring);
+      setRecurringTransactions(visibleRecurring);
 
       // Initialize form defaults when data is loaded
       setFormData(prev => ({
         ...prev,
-        accountId: !prev.accountId && allAccounts.length > 0 ? allAccounts[0].id : prev.accountId,
+        accountId: !prev.accountId && visibleAccounts.length > 0 ? visibleAccounts[0].id : prev.accountId,
         categoryId: !prev.categoryId && allCategories.length > 0 ? allCategories[0].id : prev.categoryId
       }));
     } catch (error) {
@@ -42,11 +47,11 @@ const RecurringTransactions: React.FC = () => {
       setAccounts([]);
       setRecurringTransactions([]);
     }
-  }, []);
+  }, [filterByOwnership]);
 
   useEffect(() => {
     loadData();
-  }, [loadData]);
+  }, [loadData, householdFilter]);
 
   // Reload data when form is shown to ensure categories are loaded
   useEffect(() => {

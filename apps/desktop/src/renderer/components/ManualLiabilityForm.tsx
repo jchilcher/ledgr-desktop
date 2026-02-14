@@ -1,5 +1,7 @@
 import React, { useState } from 'react';
 import type { ManualLiability, ManualLiabilityType } from '../../shared/types';
+import OwnershipSelector from './OwnershipSelector';
+import { useHousehold } from '../contexts/HouseholdContext';
 
 interface ManualLiabilityFormProps {
   liability?: ManualLiability;
@@ -17,6 +19,7 @@ const LIABILITY_TYPES: { value: ManualLiabilityType; label: string }[] = [
 ];
 
 export function ManualLiabilityForm({ liability, onSubmit, onCancel }: ManualLiabilityFormProps) {
+  const { currentUserId } = useHousehold();
   const [name, setName] = useState(liability?.name ?? '');
   const [type, setType] = useState<ManualLiabilityType>(liability?.type ?? 'other');
   const [balance, setBalance] = useState(liability ? (liability.balance / 100).toString() : '');
@@ -31,6 +34,7 @@ export function ManualLiabilityForm({ liability, onSubmit, onCancel }: ManualLia
   );
   const [termMonths, setTermMonths] = useState(liability?.termMonths?.toString() ?? '');
   const [notes, setNotes] = useState(liability?.notes ?? '');
+  const [ownerId, setOwnerId] = useState<string | null>(liability?.ownerId ?? currentUserId);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -57,11 +61,12 @@ export function ManualLiabilityForm({ liability, onSubmit, onCancel }: ManualLia
         interestRate: Number(interestRate) / 100 || 0,
         monthlyPayment: Math.round(Number(monthlyPayment) * 100) || 0,
         originalAmount: originalAmount ? Math.round(Number(originalAmount) * 100) : null,
-        startDate: null, // Could add date picker
+        startDate: null,
         termMonths: termMonths ? Number(termMonths) : null,
-        payoffDate: null, // Calculated
-        totalInterest: null, // Calculated
+        payoffDate: null,
+        totalInterest: null,
         notes: notes.trim() || null,
+        ownerId: ownerId || null,
       });
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to save liability');
@@ -190,6 +195,13 @@ export function ManualLiabilityForm({ liability, onSubmit, onCancel }: ManualLia
           onChange={e => setNotes(e.target.value)}
           rows={2}
           style={{ width: '100%', padding: '8px 12px', border: '1px solid var(--color-border)', borderRadius: 'var(--radius-md)', resize: 'vertical' }}
+        />
+      </div>
+
+      <div>
+        <OwnershipSelector
+          value={ownerId}
+          onChange={setOwnerId}
         />
       </div>
 

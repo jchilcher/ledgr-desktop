@@ -1,7 +1,29 @@
 import { ipcMain, dialog, BrowserWindow, app, shell } from 'electron';
+import fs from 'fs';
+import { randomUUID } from 'crypto';
+import crypto from 'node:crypto';
 import { BudgetDatabase } from './database';
-import { SecurityManager } from './security';
 import { exportDatabase } from './database-export';
+import {
+  deriveUEK,
+  generateKeypair,
+  encryptPrivateKey,
+  decryptPrivateKey,
+  generateDEK,
+  wrapDEKWithUEK,
+  unwrapDEKWithUEK,
+  wrapDEKWithRSA,
+} from './crypto-engine';
+import { sessionKeys } from './session-keys';
+import {
+  encryptEntityFields,
+  decryptEntityFields,
+  decryptEntityList,
+  getDecryptionDEK,
+  applyBlanketShares,
+  createAndStoreDEK,
+} from './encryption-middleware';
+import type { EncryptableEntityType, SharePermissions } from '../shared/types';
 import { selectImportFile as selectDatabaseImportFile, extractDatabaseMetadata, performDatabaseImport } from './database-import';
 import path from 'path';
 import {
@@ -95,8 +117,8 @@ import {
 } from '@ledgr/core';
 import type { PerformanceOptions } from '../shared/types';
 
-// Module-level reference for lock guard in secureHandle
-let securityManagerRef: SecurityManager | null = null;
+// Module-level lock-state getter for secureHandle lock guard
+let isLockedRef: (() => boolean) | null = null;
 
 function validateSender(event: Electron.IpcMainInvokeEvent): void {
   const senderUrl = event.senderFrame?.url || '';
@@ -113,8 +135,8 @@ function secureHandle(
 ): void {
   ipcMain.handle(channel, (event, ...args) => {
     validateSender(event);
-    // Lock guard: reject non-security IPC calls when locked
-    if (securityManagerRef?.getIsLocked() && !channel.startsWith('security:')) {
+    // Lock guard: reject non-security/users IPC calls when locked
+    if (isLockedRef?.() && !channel.startsWith('security:') && !channel.startsWith('users:')) {
       throw new Error('Application is locked');
     }
     return handler(event, ...args);
@@ -147,11 +169,11 @@ export class IPCHandlers {
   private performanceEngine: PerformanceEngine;
   private benchmarkService: BenchmarkService;
   private ofxConnections: Map<string, { bank: BankInfo; credentials: OFXCredentials }> = new Map();
+  private currentUserId: string | null = null;
+  private isLocked = false;
 
-  constructor(private db: BudgetDatabase, private securityManager?: SecurityManager) {
-    if (securityManager) {
-      securityManagerRef = securityManager;
-    }
+  constructor(private db: BudgetDatabase) {
+    isLockedRef = () => this.isLocked;
     this.forecastEngine = new ForecastEngine(db);
     this.cashFlowEngine = new CashFlowEngine(db);
     this.categorizationEngine = new CategorizationEngine(db);
@@ -352,21 +374,124 @@ export class IPCHandlers {
     this.registerHandlers();
   }
 
+  /** Set lock state (called from main.ts auto-lock timer) */
+  setLocked(locked: boolean): void {
+    this.isLocked = locked;
+  }
+
+  /** Get lock state (called from main.ts auto-lock timer) */
+  getIsLocked(): boolean {
+    return this.isLocked;
+  }
+
   private registerHandlers(): void {
+    // User handlers (household support)
+    secureHandle('users:getAll', () => {
+      return this.db.getUsers();
+    });
+
+    secureHandle('users:getById', (_event, id: string) => {
+      return this.db.getUserById(id);
+    });
+
+    secureHandle('users:getDefault', () => {
+      return this.db.getDefaultUser();
+    });
+
+    secureHandle('users:create', (_event, name: string, color: string) => {
+      return this.db.createUser(name, color);
+    });
+
+    secureHandle('users:update', (_event, id: string, updates: Partial<{ name: string; color: string; isDefault: boolean }>) => {
+      return this.db.updateUser(id, updates);
+    });
+
+    secureHandle('users:delete', (_event, id: string) => {
+      return this.db.deleteUser(id);
+    });
+
     // Account handlers
     secureHandle('accounts:getAll', () => {
-      return this.db.getAccounts();
+      const accounts = this.db.getAccounts();
+      return decryptEntityList(this.db, 'account', accounts, this.currentUserId);
     });
 
     secureHandle('accounts:getById', (_event, id: string) => {
-      return this.db.getAccountById(id);
+      const account = this.db.getAccountById(id);
+      if (!account || !account.isEncrypted) return account;
+      if (!this.currentUserId || !account.ownerId) return account;
+      const dek = getDecryptionDEK(this.db, 'account', id, account.ownerId, this.currentUserId);
+      if (!dek) return null;
+      return decryptEntityFields('account', account as unknown as Record<string, unknown>, dek);
     });
 
     secureHandle('accounts:create', (_event, account: Omit<Account, 'id' | 'createdAt'>) => {
+      const ownerId = account.ownerId;
+      if (ownerId && sessionKeys.hasSession(ownerId)) {
+        const created = this.db.createAccount(account);
+        const dek = createAndStoreDEK(this.db, 'account', created.id, ownerId);
+        if (dek) {
+          const encrypted = encryptEntityFields('account', created as unknown as Record<string, unknown>, dek);
+          const fields = ['name', 'institution', 'balance'];
+          const setClauses: string[] = [];
+          const values: unknown[] = [];
+          for (const f of fields) {
+            if (encrypted[f] !== undefined) {
+              setClauses.push(`${f} = ?`);
+              values.push(encrypted[f]);
+            }
+          }
+          setClauses.push('isEncrypted = 1');
+          values.push(created.id);
+          this.db.rawDb.prepare(`UPDATE accounts SET ${setClauses.join(', ')} WHERE id = ?`).run(...values);
+          applyBlanketShares(this.db, 'account', created.id, ownerId, dek);
+          return { ...created, isEncrypted: true };
+        }
+        return created;
+      }
       return this.db.createAccount(account);
     });
 
     secureHandle('accounts:update', (_event, id: string, updates: Partial<Omit<Account, 'id' | 'createdAt'>>) => {
+      const existing = this.db.getAccountById(id);
+      if (existing?.isEncrypted && existing.ownerId && this.currentUserId) {
+        const dek = getDecryptionDEK(this.db, 'account', id, existing.ownerId, this.currentUserId);
+        if (dek) {
+          // Decrypt existing, merge updates, re-encrypt
+          const decrypted = decryptEntityFields('account', existing as unknown as Record<string, unknown>, dek);
+          const merged = { ...decrypted, ...updates };
+          const encrypted = encryptEntityFields('account', merged, dek);
+          // Write encrypted sensitive fields directly
+          const fields = ['name', 'institution', 'balance'];
+          const setClauses: string[] = [];
+          const values: unknown[] = [];
+          for (const f of fields) {
+            if (encrypted[f] !== undefined) {
+              setClauses.push(`${f} = ?`);
+              values.push(encrypted[f]);
+            }
+          }
+          // Apply non-sensitive updates via normal update
+          const nonSensitiveUpdates: Partial<Omit<Account, 'id' | 'createdAt'>> = {};
+          for (const [k, v] of Object.entries(updates)) {
+            if (!fields.includes(k)) {
+              (nonSensitiveUpdates as Record<string, unknown>)[k] = v;
+            }
+          }
+          if (Object.keys(nonSensitiveUpdates).length > 0) {
+            this.db.updateAccount(id, nonSensitiveUpdates);
+          }
+          if (setClauses.length > 0) {
+            values.push(id);
+            this.db.rawDb.prepare(`UPDATE accounts SET ${setClauses.join(', ')} WHERE id = ?`).run(...values);
+          }
+          const result = this.db.getAccountById(id);
+          if (result && result.isEncrypted) {
+            return decryptEntityFields('account', result as unknown as Record<string, unknown>, dek);
+          }
+          return result;
+        }
+      }
       return this.db.updateAccount(id, updates);
     });
 
@@ -385,18 +510,94 @@ export class IPCHandlers {
 
     // Transaction handlers
     secureHandle('transactions:getAll', () => {
-      return this.db.getTransactions();
+      const transactions = this.db.getTransactions();
+      if (!this.currentUserId) return transactions;
+      // Decrypt transactions that belong to encrypted accounts
+      return transactions.map(tx => {
+        const account = this.db.getAccountById(tx.accountId);
+        if (!account?.isEncrypted || !account.ownerId) return tx;
+        const dek = getDecryptionDEK(this.db, 'account', account.id, account.ownerId, this.currentUserId!);
+        if (!dek) return tx;
+        return decryptEntityFields('transaction', tx as unknown as Record<string, unknown>, dek);
+      });
     });
 
     secureHandle('transactions:getByAccount', (_event, accountId: string) => {
-      return this.db.getTransactionsByAccount(accountId);
+      const transactions = this.db.getTransactionsByAccount(accountId);
+      const account = this.db.getAccountById(accountId);
+      if (!account?.isEncrypted || !account.ownerId || !this.currentUserId) return transactions;
+      const dek = getDecryptionDEK(this.db, 'account', accountId, account.ownerId, this.currentUserId);
+      if (!dek) return transactions;
+      return transactions.map(tx => decryptEntityFields('transaction', tx as unknown as Record<string, unknown>, dek));
     });
 
     secureHandle('transactions:create', (_event, transaction: Omit<Transaction, 'id' | 'createdAt'>) => {
+      const account = this.db.getAccountById(transaction.accountId);
+      if (account?.isEncrypted && account.ownerId && this.currentUserId) {
+        const dek = getDecryptionDEK(this.db, 'account', account.id, account.ownerId, this.currentUserId);
+        if (dek) {
+          const created = this.db.createTransaction(transaction);
+          const encrypted = encryptEntityFields('transaction', created as unknown as Record<string, unknown>, dek);
+          const fields = ['description', 'notes', 'amount'];
+          const setClauses: string[] = [];
+          const values: unknown[] = [];
+          for (const f of fields) {
+            if (encrypted[f] !== undefined) {
+              setClauses.push(`${f} = ?`);
+              values.push(encrypted[f]);
+            }
+          }
+          if (setClauses.length > 0) {
+            values.push(created.id);
+            this.db.rawDb.prepare(`UPDATE transactions SET ${setClauses.join(', ')} WHERE id = ?`).run(...values);
+          }
+          return created;
+        }
+      }
       return this.db.createTransaction(transaction);
     });
 
     secureHandle('transactions:update', (_event, id: string, updates: Partial<Omit<Transaction, 'id' | 'createdAt'>>) => {
+      const existing = this.db.getTransactionById(id);
+      if (existing && this.currentUserId) {
+        const account = this.db.getAccountById(existing.accountId);
+        if (account?.isEncrypted && account.ownerId) {
+          const dek = getDecryptionDEK(this.db, 'account', account.id, account.ownerId, this.currentUserId);
+          if (dek) {
+            const decrypted = decryptEntityFields('transaction', existing as unknown as Record<string, unknown>, dek);
+            const merged = { ...decrypted, ...updates };
+            const encrypted = encryptEntityFields('transaction', merged, dek);
+            const fields = ['description', 'notes', 'amount'];
+            const setClauses: string[] = [];
+            const values: unknown[] = [];
+            for (const f of fields) {
+              if (encrypted[f] !== undefined) {
+                setClauses.push(`${f} = ?`);
+                values.push(encrypted[f]);
+              }
+            }
+            // Apply non-sensitive updates normally
+            const nonSensitiveUpdates: Partial<Omit<Transaction, 'id' | 'createdAt'>> = {};
+            for (const [k, v] of Object.entries(updates)) {
+              if (!fields.includes(k)) {
+                (nonSensitiveUpdates as Record<string, unknown>)[k] = v;
+              }
+            }
+            if (Object.keys(nonSensitiveUpdates).length > 0) {
+              this.db.updateTransaction(id, nonSensitiveUpdates);
+            }
+            if (setClauses.length > 0) {
+              values.push(id);
+              this.db.rawDb.prepare(`UPDATE transactions SET ${setClauses.join(', ')} WHERE id = ?`).run(...values);
+            }
+            const result = this.db.getTransactionById(id);
+            if (result) {
+              return decryptEntityFields('transaction', result as unknown as Record<string, unknown>, dek);
+            }
+            return result;
+          }
+        }
+      }
       return this.db.updateTransaction(id, updates);
     });
 
@@ -1109,15 +1310,42 @@ export class IPCHandlers {
     // ==================== Phase 5: Net Worth Integration (v1.1) ====================
     // Manual Assets handlers
     secureHandle('manualAssets:getAll', () => {
-      return this.db.getManualAssets();
+      const assets = this.db.getManualAssets();
+      return decryptEntityList(this.db, 'manual_asset', assets, this.currentUserId);
     });
 
     secureHandle('manualAssets:getById', (_event, id: string) => {
-      return this.db.getManualAssetById(id);
+      const asset = this.db.getManualAssetById(id);
+      if (!asset || !asset.isEncrypted || !asset.ownerId || !this.currentUserId) return asset;
+      const dek = getDecryptionDEK(this.db, 'manual_asset', id, asset.ownerId, this.currentUserId);
+      if (!dek) return null;
+      return decryptEntityFields('manual_asset', asset as unknown as Record<string, unknown>, dek);
     });
 
     secureHandle('manualAssets:create', (_event, asset: Omit<ManualAsset, 'id' | 'createdAt' | 'lastUpdated'>) => {
-      return this.db.createManualAsset(asset);
+      const created = this.db.createManualAsset(asset);
+      const ownerId = created.ownerId;
+      if (ownerId && sessionKeys.hasSession(ownerId)) {
+        const dek = createAndStoreDEK(this.db, 'manual_asset', created.id, ownerId);
+        if (dek) {
+          const encrypted = encryptEntityFields('manual_asset', created as unknown as Record<string, unknown>, dek);
+          const fields = ['name', 'notes', 'value'];
+          const setClauses: string[] = [];
+          const values: unknown[] = [];
+          for (const f of fields) {
+            if (encrypted[f] !== undefined) {
+              setClauses.push(`${f} = ?`);
+              values.push(encrypted[f]);
+            }
+          }
+          setClauses.push('isEncrypted = 1');
+          values.push(created.id);
+          this.db.rawDb.prepare(`UPDATE manual_assets SET ${setClauses.join(', ')} WHERE id = ?`).run(...values);
+          applyBlanketShares(this.db, 'manual_asset', created.id, ownerId, dek);
+          return { ...created, isEncrypted: true };
+        }
+      }
+      return created;
     });
 
     secureHandle('manualAssets:update', (_event, id: string, updates: Partial<Omit<ManualAsset, 'id' | 'createdAt'>>) => {
@@ -1133,6 +1361,43 @@ export class IPCHandlers {
           delete parsedUpdates[key as keyof typeof parsedUpdates];
         }
       });
+
+      const existing = this.db.getManualAssetById(id);
+      if (existing?.isEncrypted && existing.ownerId && this.currentUserId) {
+        const dek = getDecryptionDEK(this.db, 'manual_asset', id, existing.ownerId, this.currentUserId);
+        if (dek) {
+          const decrypted = decryptEntityFields('manual_asset', existing as unknown as Record<string, unknown>, dek);
+          const merged = { ...decrypted, ...parsedUpdates };
+          const encrypted = encryptEntityFields('manual_asset', merged, dek);
+          const sensitiveFields = ['name', 'notes', 'value'];
+          const setClauses: string[] = [];
+          const values: unknown[] = [];
+          for (const f of sensitiveFields) {
+            if (encrypted[f] !== undefined) {
+              setClauses.push(`${f} = ?`);
+              values.push(encrypted[f]);
+            }
+          }
+          const nonSensitive: Record<string, unknown> = {};
+          for (const [k, v] of Object.entries(parsedUpdates)) {
+            if (!sensitiveFields.includes(k) && v !== undefined) {
+              nonSensitive[k] = v;
+            }
+          }
+          if (Object.keys(nonSensitive).length > 0) {
+            this.db.updateManualAsset(id, nonSensitive as Partial<Omit<ManualAsset, 'id' | 'createdAt'>>);
+          }
+          if (setClauses.length > 0) {
+            values.push(id);
+            this.db.rawDb.prepare(`UPDATE manual_assets SET ${setClauses.join(', ')} WHERE id = ?`).run(...values);
+          }
+          const result = this.db.getManualAssetById(id);
+          if (result?.isEncrypted && result.ownerId) {
+            return decryptEntityFields('manual_asset', result as unknown as Record<string, unknown>, dek);
+          }
+          return result;
+        }
+      }
       return this.db.updateManualAsset(id, parsedUpdates as Partial<Omit<ManualAsset, 'id' | 'createdAt'>>);
     });
 
@@ -1141,20 +1406,48 @@ export class IPCHandlers {
     });
 
     secureHandle('manualAssets:getDueReminders', () => {
-      return this.db.getAssetsWithDueReminders();
+      const reminders = this.db.getAssetsWithDueReminders();
+      return decryptEntityList(this.db, 'manual_asset', reminders, this.currentUserId);
     });
 
     // Manual Liabilities handlers
     secureHandle('manualLiabilities:getAll', () => {
-      return this.db.getManualLiabilities();
+      const liabilities = this.db.getManualLiabilities();
+      return decryptEntityList(this.db, 'manual_liability', liabilities, this.currentUserId);
     });
 
     secureHandle('manualLiabilities:getById', (_event, id: string) => {
-      return this.db.getManualLiabilityById(id);
+      const liability = this.db.getManualLiabilityById(id);
+      if (!liability || !liability.isEncrypted || !liability.ownerId || !this.currentUserId) return liability;
+      const dek = getDecryptionDEK(this.db, 'manual_liability', id, liability.ownerId, this.currentUserId);
+      if (!dek) return null;
+      return decryptEntityFields('manual_liability', liability as unknown as Record<string, unknown>, dek);
     });
 
     secureHandle('manualLiabilities:create', (_event, liability: Omit<ManualLiability, 'id' | 'createdAt' | 'lastUpdated'>) => {
-      return this.db.createManualLiability(liability);
+      const created = this.db.createManualLiability(liability);
+      const ownerId = created.ownerId;
+      if (ownerId && sessionKeys.hasSession(ownerId)) {
+        const dek = createAndStoreDEK(this.db, 'manual_liability', created.id, ownerId);
+        if (dek) {
+          const encrypted = encryptEntityFields('manual_liability', created as unknown as Record<string, unknown>, dek);
+          const fields = ['name', 'notes', 'balance', 'monthlyPayment'];
+          const setClauses: string[] = [];
+          const values: unknown[] = [];
+          for (const f of fields) {
+            if (encrypted[f] !== undefined) {
+              setClauses.push(`${f} = ?`);
+              values.push(encrypted[f]);
+            }
+          }
+          setClauses.push('isEncrypted = 1');
+          values.push(created.id);
+          this.db.rawDb.prepare(`UPDATE manual_liabilities SET ${setClauses.join(', ')} WHERE id = ?`).run(...values);
+          applyBlanketShares(this.db, 'manual_liability', created.id, ownerId, dek);
+          return { ...created, isEncrypted: true };
+        }
+      }
+      return created;
     });
 
     secureHandle('manualLiabilities:update', (_event, id: string, updates: Partial<Omit<ManualLiability, 'id' | 'createdAt'>>) => {
@@ -1170,6 +1463,43 @@ export class IPCHandlers {
           delete parsedUpdates[key as keyof typeof parsedUpdates];
         }
       });
+
+      const existing = this.db.getManualLiabilityById(id);
+      if (existing?.isEncrypted && existing.ownerId && this.currentUserId) {
+        const dek = getDecryptionDEK(this.db, 'manual_liability', id, existing.ownerId, this.currentUserId);
+        if (dek) {
+          const decrypted = decryptEntityFields('manual_liability', existing as unknown as Record<string, unknown>, dek);
+          const merged = { ...decrypted, ...parsedUpdates };
+          const encrypted = encryptEntityFields('manual_liability', merged, dek);
+          const sensitiveFields = ['name', 'notes', 'balance', 'monthlyPayment'];
+          const setClauses: string[] = [];
+          const values: unknown[] = [];
+          for (const f of sensitiveFields) {
+            if (encrypted[f] !== undefined) {
+              setClauses.push(`${f} = ?`);
+              values.push(encrypted[f]);
+            }
+          }
+          const nonSensitive: Record<string, unknown> = {};
+          for (const [k, v] of Object.entries(parsedUpdates)) {
+            if (!sensitiveFields.includes(k) && v !== undefined) {
+              nonSensitive[k] = v;
+            }
+          }
+          if (Object.keys(nonSensitive).length > 0) {
+            this.db.updateManualLiability(id, nonSensitive as Partial<Omit<ManualLiability, 'id' | 'createdAt'>>);
+          }
+          if (setClauses.length > 0) {
+            values.push(id);
+            this.db.rawDb.prepare(`UPDATE manual_liabilities SET ${setClauses.join(', ')} WHERE id = ?`).run(...values);
+          }
+          const result = this.db.getManualLiabilityById(id);
+          if (result?.isEncrypted && result.ownerId) {
+            return decryptEntityFields('manual_liability', result as unknown as Record<string, unknown>, dek);
+          }
+          return result;
+        }
+      }
       return this.db.updateManualLiability(id, parsedUpdates as Partial<Omit<ManualLiability, 'id' | 'createdAt'>>);
     });
 
@@ -1248,28 +1578,93 @@ export class IPCHandlers {
 
     // ==================== Phase 4: Savings Goals ====================
     secureHandle('savingsGoals:getAll', () => {
-      return this.db.getSavingsGoals();
+      const goals = this.db.getSavingsGoals();
+      return decryptEntityList(this.db, 'savings_goal', goals, this.currentUserId);
     });
 
     secureHandle('savingsGoals:getActive', () => {
-      return this.db.getActiveSavingsGoals();
+      const goals = this.db.getActiveSavingsGoals();
+      return decryptEntityList(this.db, 'savings_goal', goals, this.currentUserId);
     });
 
     secureHandle('savingsGoals:getById', (_event, id: string) => {
-      return this.db.getSavingsGoalById(id);
+      const goal = this.db.getSavingsGoalById(id);
+      if (!goal || !goal.isEncrypted || !goal.ownerId || !this.currentUserId) return goal;
+      const dek = getDecryptionDEK(this.db, 'savings_goal', id, goal.ownerId, this.currentUserId);
+      if (!dek) return null;
+      return decryptEntityFields('savings_goal', goal as unknown as Record<string, unknown>, dek);
     });
 
     secureHandle('savingsGoals:create', (_event, goal: Omit<SavingsGoal, 'id' | 'createdAt'>) => {
-      return this.db.createSavingsGoal({
+      const created = this.db.createSavingsGoal({
         ...goal,
         targetDate: goal.targetDate ? new Date(goal.targetDate) : null,
       });
+      const ownerId = created.ownerId;
+      if (ownerId && sessionKeys.hasSession(ownerId)) {
+        const dek = createAndStoreDEK(this.db, 'savings_goal', created.id, ownerId);
+        if (dek) {
+          const encrypted = encryptEntityFields('savings_goal', created as unknown as Record<string, unknown>, dek);
+          const fields = ['name', 'targetAmount', 'currentAmount'];
+          const setClauses: string[] = [];
+          const values: unknown[] = [];
+          for (const f of fields) {
+            if (encrypted[f] !== undefined) {
+              setClauses.push(`${f} = ?`);
+              values.push(encrypted[f]);
+            }
+          }
+          setClauses.push('isEncrypted = 1');
+          values.push(created.id);
+          this.db.rawDb.prepare(`UPDATE savings_goals SET ${setClauses.join(', ')} WHERE id = ?`).run(...values);
+          applyBlanketShares(this.db, 'savings_goal', created.id, ownerId, dek);
+          return { ...created, isEncrypted: true };
+        }
+      }
+      return created;
     });
 
     secureHandle('savingsGoals:update', (_event, id: string, updates: Partial<Omit<SavingsGoal, 'id' | 'createdAt'>>) => {
       const parsedUpdates = updates.targetDate
         ? { ...updates, targetDate: new Date(updates.targetDate) }
         : updates;
+
+      const existing = this.db.getSavingsGoalById(id);
+      if (existing?.isEncrypted && existing.ownerId && this.currentUserId) {
+        const dek = getDecryptionDEK(this.db, 'savings_goal', id, existing.ownerId, this.currentUserId);
+        if (dek) {
+          const decrypted = decryptEntityFields('savings_goal', existing as unknown as Record<string, unknown>, dek);
+          const merged = { ...decrypted, ...parsedUpdates };
+          const encrypted = encryptEntityFields('savings_goal', merged, dek);
+          const sensitiveFields = ['name', 'targetAmount', 'currentAmount'];
+          const setClauses: string[] = [];
+          const values: unknown[] = [];
+          for (const f of sensitiveFields) {
+            if (encrypted[f] !== undefined) {
+              setClauses.push(`${f} = ?`);
+              values.push(encrypted[f]);
+            }
+          }
+          const nonSensitive: Partial<Omit<SavingsGoal, 'id' | 'createdAt'>> = {};
+          for (const [k, v] of Object.entries(parsedUpdates)) {
+            if (!sensitiveFields.includes(k)) {
+              (nonSensitive as Record<string, unknown>)[k] = v;
+            }
+          }
+          if (Object.keys(nonSensitive).length > 0) {
+            this.db.updateSavingsGoal(id, nonSensitive);
+          }
+          if (setClauses.length > 0) {
+            values.push(id);
+            this.db.rawDb.prepare(`UPDATE savings_goals SET ${setClauses.join(', ')} WHERE id = ?`).run(...values);
+          }
+          const result = this.db.getSavingsGoalById(id);
+          if (result?.isEncrypted && result.ownerId) {
+            return decryptEntityFields('savings_goal', result as unknown as Record<string, unknown>, dek);
+          }
+          return result;
+        }
+      }
       return this.db.updateSavingsGoal(id, parsedUpdates);
     });
 
@@ -1494,9 +1889,82 @@ export class IPCHandlers {
       return this.db.deleteReceipt(id);
     });
 
+    // ==================== Transaction Attachments ====================
+    secureHandle('attachments:getByTransaction', (_event, transactionId: string) => {
+      return this.db.getAttachmentsByTransaction(transactionId);
+    });
+
+    secureHandle('attachments:getById', (_event, id: string) => {
+      return this.db.getAttachmentById(id);
+    });
+
+    secureHandle('attachments:add', async (_event, transactionId: string, sourceFilePath: string) => {
+      const attachmentsDir = path.join(app.getPath('userData'), 'attachments');
+      if (!fs.existsSync(attachmentsDir)) {
+        fs.mkdirSync(attachmentsDir, { recursive: true });
+      }
+
+      const originalExt = path.extname(sourceFilePath);
+      const originalName = path.basename(sourceFilePath);
+      const uniqueName = `${randomUUID()}${originalExt}`;
+      const destPath = path.join(attachmentsDir, uniqueName);
+
+      fs.copyFileSync(sourceFilePath, destPath);
+
+      const stats = fs.statSync(destPath);
+      const mimeType = this.getMimeType(originalExt);
+
+      return this.db.createAttachment({
+        transactionId,
+        filename: originalName,
+        filePath: destPath,
+        mimeType,
+        fileSize: stats.size,
+      });
+    });
+
+    secureHandle('attachments:delete', (_event, id: string) => {
+      const attachment = this.db.getAttachmentById(id);
+      if (attachment) {
+        try {
+          if (fs.existsSync(attachment.filePath)) {
+            fs.unlinkSync(attachment.filePath);
+          }
+        } catch {
+          // File may already be deleted; proceed with DB deletion
+        }
+      }
+      return this.db.deleteAttachment(id);
+    });
+
+    secureHandle('attachments:open', async (_event, id: string) => {
+      const attachment = this.db.getAttachmentById(id);
+      if (!attachment) throw new Error('Attachment not found');
+      if (!fs.existsSync(attachment.filePath)) throw new Error('Attachment file not found on disk');
+      await shell.openPath(attachment.filePath);
+    });
+
+    secureHandle('attachments:getCountsByTransactionIds', (_event, transactionIds: string[]) => {
+      return this.db.getAttachmentCountsByTransactionIds(transactionIds);
+    });
+
+    secureHandle('attachments:selectFile', async () => {
+      const win = BrowserWindow.getFocusedWindow();
+      const result = await dialog.showOpenDialog(win!, {
+        properties: ['openFile', 'multiSelections'],
+        filters: [
+          { name: 'All Files', extensions: ['*'] },
+          { name: 'Images', extensions: ['png', 'jpg', 'jpeg', 'gif', 'bmp', 'webp'] },
+          { name: 'Documents', extensions: ['pdf', 'doc', 'docx', 'xls', 'xlsx', 'txt', 'csv'] },
+        ],
+      });
+      return { canceled: result.canceled, filePaths: result.filePaths };
+    });
+
     // ==================== Unified Recurring Items ====================
     secureHandle('recurring:getAll', () => {
-      return this.db.getRecurringItems();
+      const items = this.db.getRecurringItems();
+      return decryptEntityList(this.db, 'recurring_item', items, this.currentUserId);
     });
 
     secureHandle('recurring:migrate', () => {
@@ -1506,24 +1974,52 @@ export class IPCHandlers {
     });
 
     secureHandle('recurring:getActive', () => {
-      return this.db.getActiveRecurringItems();
+      const items = this.db.getActiveRecurringItems();
+      return decryptEntityList(this.db, 'recurring_item', items, this.currentUserId);
     });
 
     secureHandle('recurring:getById', (_event, id: string) => {
-      return this.db.getRecurringItemById(id);
+      const item = this.db.getRecurringItemById(id);
+      if (!item || !item.isEncrypted || !item.ownerId || !this.currentUserId) return item;
+      const dek = getDecryptionDEK(this.db, 'recurring_item', id, item.ownerId, this.currentUserId);
+      if (!dek) return null;
+      return decryptEntityFields('recurring_item', item as unknown as Record<string, unknown>, dek);
     });
 
     secureHandle('recurring:getByAccount', (_event, accountId: string) => {
-      return this.db.getRecurringItemsByAccount(accountId);
+      const items = this.db.getRecurringItemsByAccount(accountId);
+      return decryptEntityList(this.db, 'recurring_item', items, this.currentUserId);
     });
 
     secureHandle('recurring:create', (_event, item: Omit<RecurringItem, 'id' | 'createdAt'>) => {
-      return this.db.createRecurringItem({
+      const created = this.db.createRecurringItem({
         ...item,
         startDate: new Date(item.startDate),
         nextOccurrence: new Date(item.nextOccurrence),
         endDate: item.endDate ? new Date(item.endDate) : null,
       });
+      const ownerId = created.ownerId;
+      if (ownerId && sessionKeys.hasSession(ownerId)) {
+        const dek = createAndStoreDEK(this.db, 'recurring_item', created.id, ownerId);
+        if (dek) {
+          const encrypted = encryptEntityFields('recurring_item', created as unknown as Record<string, unknown>, dek);
+          const fields = ['description', 'amount'];
+          const setClauses: string[] = [];
+          const values: unknown[] = [];
+          for (const f of fields) {
+            if (encrypted[f] !== undefined) {
+              setClauses.push(`${f} = ?`);
+              values.push(encrypted[f]);
+            }
+          }
+          setClauses.push('isEncrypted = 1');
+          values.push(created.id);
+          this.db.rawDb.prepare(`UPDATE recurring_items SET ${setClauses.join(', ')} WHERE id = ?`).run(...values);
+          applyBlanketShares(this.db, 'recurring_item', created.id, ownerId, dek);
+          return { ...created, isEncrypted: true };
+        }
+      }
+      return created;
     });
 
     secureHandle('recurring:update', (_event, id: string, updates: Partial<Omit<RecurringItem, 'id' | 'createdAt'>>) => {
@@ -1531,6 +2027,43 @@ export class IPCHandlers {
       if (updates.startDate) parsedUpdates.startDate = new Date(updates.startDate);
       if (updates.nextOccurrence) parsedUpdates.nextOccurrence = new Date(updates.nextOccurrence);
       if (updates.endDate) parsedUpdates.endDate = new Date(updates.endDate);
+
+      const existing = this.db.getRecurringItemById(id);
+      if (existing?.isEncrypted && existing.ownerId && this.currentUserId) {
+        const dek = getDecryptionDEK(this.db, 'recurring_item', id, existing.ownerId, this.currentUserId);
+        if (dek) {
+          const decrypted = decryptEntityFields('recurring_item', existing as unknown as Record<string, unknown>, dek);
+          const merged = { ...decrypted, ...parsedUpdates };
+          const encrypted = encryptEntityFields('recurring_item', merged, dek);
+          const sensitiveFields = ['description', 'amount'];
+          const setClauses: string[] = [];
+          const values: unknown[] = [];
+          for (const f of sensitiveFields) {
+            if (encrypted[f] !== undefined) {
+              setClauses.push(`${f} = ?`);
+              values.push(encrypted[f]);
+            }
+          }
+          const nonSensitive: Partial<Omit<RecurringItem, 'id' | 'createdAt'>> = {};
+          for (const [k, v] of Object.entries(parsedUpdates)) {
+            if (!sensitiveFields.includes(k)) {
+              (nonSensitive as Record<string, unknown>)[k] = v;
+            }
+          }
+          if (Object.keys(nonSensitive).length > 0) {
+            this.db.updateRecurringItem(id, nonSensitive);
+          }
+          if (setClauses.length > 0) {
+            values.push(id);
+            this.db.rawDb.prepare(`UPDATE recurring_items SET ${setClauses.join(', ')} WHERE id = ?`).run(...values);
+          }
+          const result = this.db.getRecurringItemById(id);
+          if (result?.isEncrypted && result.ownerId) {
+            return decryptEntityFields('recurring_item', result as unknown as Record<string, unknown>, dek);
+          }
+          return result;
+        }
+      }
       return this.db.updateRecurringItem(id, parsedUpdates);
     });
 
@@ -1549,6 +2082,10 @@ export class IPCHandlers {
 
     secureHandle('recurringPayments:getUpcoming', (_event, days?: number) => {
       return this.db.getUpcomingRecurringPayments(days);
+    });
+
+    secureHandle('recurringPayments:getByDateRange', (_event, startDate: string, endDate: string) => {
+      return this.db.getRecurringPaymentsByDateRange(startDate, endDate);
     });
 
     secureHandle('recurringPayments:create', (_event, payment: Omit<RecurringPayment, 'id' | 'createdAt'>) => {
@@ -1973,18 +2510,81 @@ export class IPCHandlers {
 
     // Investment Account handlers (v1.1)
     secureHandle('investmentAccounts:getAll', () => {
-      return this.db.getInvestmentAccounts();
+      const accounts = this.db.getInvestmentAccounts();
+      return decryptEntityList(this.db, 'investment_account', accounts, this.currentUserId);
     });
 
     secureHandle('investmentAccounts:getById', (_event, id: string) => {
-      return this.db.getInvestmentAccountById(id);
+      const account = this.db.getInvestmentAccountById(id);
+      if (!account || !account.isEncrypted || !account.ownerId || !this.currentUserId) return account;
+      const dek = getDecryptionDEK(this.db, 'investment_account', id, account.ownerId, this.currentUserId);
+      if (!dek) return null;
+      return decryptEntityFields('investment_account', account as unknown as Record<string, unknown>, dek);
     });
 
     secureHandle('investmentAccounts:create', (_event, account: Omit<InvestmentAccount, 'id' | 'createdAt'>) => {
-      return this.db.createInvestmentAccount(account);
+      const created = this.db.createInvestmentAccount(account);
+      const ownerId = created.ownerId;
+      if (ownerId && sessionKeys.hasSession(ownerId)) {
+        const dek = createAndStoreDEK(this.db, 'investment_account', created.id, ownerId);
+        if (dek) {
+          const encrypted = encryptEntityFields('investment_account', created as unknown as Record<string, unknown>, dek);
+          const fields = ['name', 'institution'];
+          const setClauses: string[] = [];
+          const values: unknown[] = [];
+          for (const f of fields) {
+            if (encrypted[f] !== undefined) {
+              setClauses.push(`${f} = ?`);
+              values.push(encrypted[f]);
+            }
+          }
+          setClauses.push('isEncrypted = 1');
+          values.push(created.id);
+          this.db.rawDb.prepare(`UPDATE investment_accounts SET ${setClauses.join(', ')} WHERE id = ?`).run(...values);
+          applyBlanketShares(this.db, 'investment_account', created.id, ownerId, dek);
+          return { ...created, isEncrypted: true };
+        }
+      }
+      return created;
     });
 
     secureHandle('investmentAccounts:update', (_event, id: string, updates: Partial<Omit<InvestmentAccount, 'id' | 'createdAt'>>) => {
+      const existing = this.db.getInvestmentAccountById(id);
+      if (existing?.isEncrypted && existing.ownerId && this.currentUserId) {
+        const dek = getDecryptionDEK(this.db, 'investment_account', id, existing.ownerId, this.currentUserId);
+        if (dek) {
+          const decrypted = decryptEntityFields('investment_account', existing as unknown as Record<string, unknown>, dek);
+          const merged = { ...decrypted, ...updates };
+          const encrypted = encryptEntityFields('investment_account', merged, dek);
+          const sensitiveFields = ['name', 'institution'];
+          const setClauses: string[] = [];
+          const values: unknown[] = [];
+          for (const f of sensitiveFields) {
+            if (encrypted[f] !== undefined) {
+              setClauses.push(`${f} = ?`);
+              values.push(encrypted[f]);
+            }
+          }
+          const nonSensitive: Partial<Omit<InvestmentAccount, 'id' | 'createdAt'>> = {};
+          for (const [k, v] of Object.entries(updates)) {
+            if (!sensitiveFields.includes(k)) {
+              (nonSensitive as Record<string, unknown>)[k] = v;
+            }
+          }
+          if (Object.keys(nonSensitive).length > 0) {
+            this.db.updateInvestmentAccount(id, nonSensitive);
+          }
+          if (setClauses.length > 0) {
+            values.push(id);
+            this.db.rawDb.prepare(`UPDATE investment_accounts SET ${setClauses.join(', ')} WHERE id = ?`).run(...values);
+          }
+          const result = this.db.getInvestmentAccountById(id);
+          if (result?.isEncrypted && result.ownerId) {
+            return decryptEntityFields('investment_account', result as unknown as Record<string, unknown>, dek);
+          }
+          return result;
+        }
+      }
       return this.db.updateInvestmentAccount(id, updates);
     });
 
@@ -2457,6 +3057,40 @@ export class IPCHandlers {
       this.db.setSetting('categoryTrendsSelectedCategories', categoryIds);
     });
 
+    // ==================== Budget Settings (Flex Mode) ====================
+    secureHandle('budgetSettings:getMode', () => {
+      return this.db.getSetting('budgetMode', 'category');
+    });
+
+    secureHandle('budgetSettings:setMode', (_event, mode: string) => {
+      this.db.setSetting('budgetMode', mode);
+    });
+
+    secureHandle('budgetSettings:getFlexTarget', () => {
+      const value = this.db.getSetting('budgetFlexTarget', '');
+      if (!value) return 0;
+      const parsed = parseInt(value, 10);
+      return isNaN(parsed) ? 0 : parsed;
+    });
+
+    secureHandle('budgetSettings:setFlexTarget', (_event, amountCents: number) => {
+      this.db.setSetting('budgetFlexTarget', String(amountCents));
+    });
+
+    secureHandle('budgetSettings:getFixedCategoryIds', () => {
+      const value = this.db.getSetting('budgetFixedCategoryIds', '');
+      if (!value) return [];
+      try {
+        return JSON.parse(value);
+      } catch {
+        return [];
+      }
+    });
+
+    secureHandle('budgetSettings:setFixedCategoryIds', (_event, ids: string[]) => {
+      this.db.setSetting('budgetFixedCategoryIds', JSON.stringify(ids));
+    });
+
     // ==================== Budget Income Override ====================
     secureHandle('budgetIncome:getOverride', () => {
       const value = this.db.getSetting('budgetMonthlyIncomeOverride', '');
@@ -2555,62 +3189,455 @@ export class IPCHandlers {
       return await performDatabaseImport(importPath, currentDbPath, this.db.rawDb);
     });
 
+    // ==================== Saved Reports ====================
+    secureHandle('savedReports:getAll', () => {
+      return this.db.getSavedReports();
+    });
+
+    secureHandle('savedReports:getById', (_event, id: string) => {
+      return this.db.getSavedReportById(id);
+    });
+
+    secureHandle('savedReports:create', (_event, name: string, config: string) => {
+      return this.db.createSavedReport(name, config);
+    });
+
+    secureHandle('savedReports:update', (_event, id: string, updates: Partial<{ name: string; config: string; lastAccessedAt: number }>) => {
+      return this.db.updateSavedReport(id, updates);
+    });
+
+    secureHandle('savedReports:delete', (_event, id: string) => {
+      return this.db.deleteSavedReport(id);
+    });
+
+    secureHandle('savedReports:getRecent', (_event, limit?: number) => {
+      return this.db.getRecentReports(limit);
+    });
+
     // ==================== Security ====================
-    secureHandle('security:getStatus', () => {
-      if (!this.securityManager) {
-        return { enabled: false, isLocked: false, autoLockMinutes: 0 };
-      }
-      return {
-        enabled: this.securityManager.isEnabled(),
-        isLocked: this.securityManager.getIsLocked(),
-        autoLockMinutes: this.securityManager.getAutoLockMinutes(),
-      };
-    });
-
-    secureHandle('security:enable', (_event, password: string, autoLockMinutes: number) => {
-      if (!this.securityManager) throw new Error('Security not available');
-      this.securityManager.enableProtection(password, autoLockMinutes);
-      this.securityManager.setSessionKey(password);
-    });
-
-    secureHandle('security:disable', (_event, password: string) => {
-      if (!this.securityManager) throw new Error('Security not available');
-      this.securityManager.disableProtection(password);
-    });
-
-    secureHandle('security:changePassword', (_event, currentPassword: string, newPassword: string) => {
-      if (!this.securityManager) throw new Error('Security not available');
-      this.securityManager.changePassword(currentPassword, newPassword);
-      this.securityManager.setSessionKey(newPassword);
-    });
-
-    secureHandle('security:updateAutoLock', (_event, minutes: number) => {
-      if (!this.securityManager) throw new Error('Security not available');
-      this.securityManager.updateAutoLockMinutes(minutes);
-    });
-
     secureHandle('security:lock', () => {
-      if (!this.securityManager) throw new Error('Security not available');
-      this.securityManager.setIsLocked(true);
+      this.isLocked = true;
+      sessionKeys.clearAll();
+      this.currentUserId = null;
       for (const win of BrowserWindow.getAllWindows()) {
         win.webContents.send('app:lock');
       }
     });
 
-    secureHandle('security:unlock', (_event, password: string) => {
-      if (!this.securityManager) throw new Error('Security not available');
-      if (!this.securityManager.verifyPassword(password)) {
-        return false;
+    secureHandle('security:getAutoLock', () => {
+      const val = this.db.getSetting('auto_lock_minutes', '0');
+      return parseInt(val, 10) || 0;
+    });
+
+    secureHandle('security:setAutoLock', (_event, minutes: number) => {
+      this.db.setSetting('auto_lock_minutes', String(minutes));
+    });
+
+    // ==================== Per-Member Auth ====================
+
+    const memberAuthHash = (password: string, salt: Buffer): Buffer => {
+      return crypto.pbkdf2Sync(password, salt, 600000, 32, 'sha512');
+    };
+
+    secureHandle('security:getMemberAuthStatus', () => {
+      const users = this.db.getUsers();
+      return users.map(u => ({
+        userId: u.id,
+        name: u.name,
+        color: u.color,
+        hasPassword: this.db.getSetting(`user_password_hash_${u.id}`, '') !== '',
+      }));
+    });
+
+    secureHandle('security:enableMemberPassword', (_event, userId: string, password: string) => {
+      // Authorization: only the user themselves can set their own password (or during initial setup when no one is logged in)
+      if (this.currentUserId !== null && this.currentUserId !== userId) {
+        throw new Error('You can only set your own password');
       }
-      this.securityManager.setIsLocked(false);
-      for (const win of BrowserWindow.getAllWindows()) {
-        win.webContents.send('app:unlock');
+      if (password.length < 4) throw new Error('Password must be at least 4 characters');
+      const salt = crypto.randomBytes(32);
+      const hash = memberAuthHash(password, salt);
+      this.db.setSetting(`user_password_hash_${userId}`, hash.toString('hex'));
+      this.db.setSetting(`user_password_salt_${userId}`, salt.toString('hex'));
+
+      // Generate encryption keys
+      const encSalt = crypto.randomBytes(32);
+      const uek = deriveUEK(password, encSalt);
+      const keypair = generateKeypair();
+      const encPriv = encryptPrivateKey(keypair.privateKeyDer, uek);
+
+      this.db.setUserKeys({
+        userId,
+        publicKey: keypair.publicKeyPem,
+        encryptedPrivateKey: encPriv.ciphertext,
+        privateKeyIv: encPriv.iv,
+        privateKeyTag: encPriv.authTag,
+        encryptionSalt: encSalt.toString('hex'),
+        createdAt: new Date(),
+      });
+
+      // Decrypt private key for session use
+      const privateKey = decryptPrivateKey(encPriv.ciphertext, encPriv.iv, encPriv.authTag, uek);
+      sessionKeys.setSession(userId, uek, privateKey);
+      this.currentUserId = userId;
+
+      // Encrypt existing entities owned by this user
+      const entityTypes: { type: EncryptableEntityType; getAll: () => { id: string; ownerId?: string | null }[]; table: string }[] = [
+        { type: 'account', getAll: () => this.db.getAccounts(), table: 'accounts' },
+        { type: 'recurring_item', getAll: () => this.db.getRecurringItems(), table: 'recurring_items' },
+        { type: 'savings_goal', getAll: () => this.db.getSavingsGoals(), table: 'savings_goals' },
+        { type: 'manual_asset', getAll: () => this.db.getManualAssets(), table: 'manual_assets' },
+        { type: 'manual_liability', getAll: () => this.db.getManualLiabilities(), table: 'manual_liabilities' },
+        { type: 'investment_account', getAll: () => this.db.getInvestmentAccounts(), table: 'investment_accounts' },
+      ];
+
+      for (const { type, getAll, table } of entityTypes) {
+        const items = getAll().filter(item => item.ownerId === userId);
+        for (const item of items) {
+          const dek = generateDEK();
+          const wrapped = wrapDEKWithUEK(dek, uek);
+          this.db.setDEK({
+            id: item.id,
+            entityType: type,
+            ownerId: userId,
+            wrappedDek: wrapped.wrappedDek,
+            dekIv: wrapped.iv,
+            dekTag: wrapped.authTag,
+          });
+
+          // Encrypt entity fields in-place
+          const encrypted = encryptEntityFields(type, item as Record<string, unknown>, dek);
+          const setClauses: string[] = [];
+          const values: unknown[] = [];
+          const sensitiveFieldsForType: Record<string, string[]> = {
+            account: ['name', 'institution', 'balance'],
+            recurring_item: ['description', 'amount'],
+            savings_goal: ['name', 'targetAmount', 'currentAmount'],
+            manual_asset: ['name', 'notes', 'value'],
+            manual_liability: ['name', 'notes', 'balance', 'monthlyPayment'],
+            investment_account: ['name', 'institution'],
+          };
+          for (const f of (sensitiveFieldsForType[type] || [])) {
+            if (encrypted[f] !== undefined) {
+              setClauses.push(`${f} = ?`);
+              values.push(encrypted[f]);
+            }
+          }
+          setClauses.push('isEncrypted = 1');
+          values.push(item.id);
+          this.db.rawDb.prepare(`UPDATE ${table} SET ${setClauses.join(', ')} WHERE id = ?`).run(...values);
+
+          // Encrypt transactions for owned accounts
+          if (type === 'account') {
+            const txns = this.db.getTransactionsByAccount(item.id);
+            for (const tx of txns) {
+              const encTx = encryptEntityFields('transaction', tx as unknown as Record<string, unknown>, dek);
+              const txSets: string[] = [];
+              const txVals: unknown[] = [];
+              for (const f of ['description', 'notes', 'amount']) {
+                if (encTx[f] !== undefined) {
+                  txSets.push(`${f} = ?`);
+                  txVals.push(encTx[f]);
+                }
+              }
+              if (txSets.length > 0) {
+                txVals.push(tx.id);
+                this.db.rawDb.prepare(`UPDATE transactions SET ${txSets.join(', ')} WHERE id = ?`).run(...txVals);
+              }
+            }
+          }
+
+          applyBlanketShares(this.db, type, item.id, userId, dek);
+        }
       }
+    });
+
+    secureHandle('security:disableMemberPassword', (_event, userId: string, currentPassword: string) => {
+      // Authorization: only the user themselves can remove their own password
+      if (this.currentUserId !== userId) {
+        throw new Error('You can only remove your own password');
+      }
+      const storedHash = this.db.getSetting(`user_password_hash_${userId}`, '');
+      const storedSalt = this.db.getSetting(`user_password_salt_${userId}`, '');
+      if (!storedHash || !storedSalt) throw new Error('No password set');
+      const salt = Buffer.from(storedSalt, 'hex');
+      const hash = memberAuthHash(currentPassword, salt);
+      if (!crypto.timingSafeEqual(hash, Buffer.from(storedHash, 'hex'))) {
+        throw new Error('Incorrect password');
+      }
+
+      // Decrypt all entities before removing encryption
+      const userKeys = this.db.getUserKeys(userId);
+      if (userKeys) {
+        const encSalt = Buffer.from(userKeys.encryptionSalt, 'hex');
+        const uek = deriveUEK(currentPassword, encSalt);
+
+        const entityConfigs: { type: EncryptableEntityType; getAll: () => { id: string; ownerId?: string | null; isEncrypted?: boolean }[]; table: string }[] = [
+          { type: 'account', getAll: () => this.db.getAccounts(), table: 'accounts' },
+          { type: 'recurring_item', getAll: () => this.db.getRecurringItems(), table: 'recurring_items' },
+          { type: 'savings_goal', getAll: () => this.db.getSavingsGoals(), table: 'savings_goals' },
+          { type: 'manual_asset', getAll: () => this.db.getManualAssets(), table: 'manual_assets' },
+          { type: 'manual_liability', getAll: () => this.db.getManualLiabilities(), table: 'manual_liabilities' },
+          { type: 'investment_account', getAll: () => this.db.getInvestmentAccounts(), table: 'investment_accounts' },
+        ];
+
+        for (const { type, getAll, table } of entityConfigs) {
+          const items = getAll().filter(item => item.ownerId === userId && item.isEncrypted);
+          for (const item of items) {
+            const dekRecord = this.db.getDEK(item.id, type);
+            if (!dekRecord) continue;
+
+            try {
+              const dek = unwrapDEKWithUEK(dekRecord.wrappedDek, dekRecord.dekIv, dekRecord.dekTag, uek);
+              const decrypted = decryptEntityFields(type, item as Record<string, unknown>, dek);
+
+              const sensitiveFields = type === 'account' ? ['name', 'institution', 'balance'] : type === 'recurring_item' ? ['description', 'amount'] : type === 'savings_goal' ? ['name', 'targetAmount', 'currentAmount'] : type === 'manual_asset' ? ['name', 'notes', 'value'] : type === 'manual_liability' ? ['name', 'notes', 'balance', 'monthlyPayment'] : ['name', 'institution'];
+              const setClauses: string[] = [];
+              const values: unknown[] = [];
+              for (const f of sensitiveFields) {
+                if (decrypted[f] !== undefined) {
+                  setClauses.push(`${f} = ?`);
+                  values.push(decrypted[f]);
+                }
+              }
+              setClauses.push('isEncrypted = 0');
+              values.push(item.id);
+              this.db.rawDb.prepare(`UPDATE ${table} SET ${setClauses.join(', ')} WHERE id = ?`).run(...values);
+
+              // Decrypt transactions for owned accounts
+              if (type === 'account') {
+                const txns = this.db.getTransactionsByAccount(item.id);
+                for (const tx of txns) {
+                  const decTx = decryptEntityFields('transaction', tx as unknown as Record<string, unknown>, dek);
+                  const txSets: string[] = [];
+                  const txVals: unknown[] = [];
+                  for (const f of ['description', 'notes', 'amount']) {
+                    if (decTx[f] !== undefined) {
+                      txSets.push(`${f} = ?`);
+                      txVals.push(decTx[f]);
+                    }
+                  }
+                  if (txSets.length > 0) {
+                    txVals.push(tx.id);
+                    this.db.rawDb.prepare(`UPDATE transactions SET ${txSets.join(', ')} WHERE id = ?`).run(...txVals);
+                  }
+                }
+              }
+            } catch {
+              // Skip entities that can't be decrypted
+            }
+          }
+        }
+
+        // Delete encryption metadata
+        this.db.deleteDEKsByOwner(userId);
+        // Delete shares owned by this user
+        const ownedShares = this.db.getSharesForRecipient(userId);
+        for (const share of ownedShares) {
+          this.db.deleteShare(share.id);
+        }
+        // Delete shares this user created (as owner)
+        const allUsers = this.db.getUsers();
+        for (const u of allUsers) {
+          if (u.id === userId) continue;
+          const sharesForRecipient = this.db.getSharesForRecipient(u.id);
+          for (const share of sharesForRecipient) {
+            if (share.ownerId === userId) {
+              this.db.deleteShare(share.id);
+            }
+          }
+        }
+        // Delete user keys
+        this.db.rawDb.prepare('DELETE FROM user_keys WHERE userId = ?').run(userId);
+        // Delete sharing defaults for this user
+        const defaults = this.db.getSharingDefaults(userId);
+        for (const d of defaults) {
+          this.db.deleteSharingDefault(d.id);
+        }
+      }
+
+      sessionKeys.clearSession(userId);
+      this.db.setSetting(`user_password_hash_${userId}`, '');
+      this.db.setSetting(`user_password_salt_${userId}`, '');
+    });
+
+    secureHandle('security:changeMemberPassword', (_event, userId: string, oldPassword: string, newPassword: string) => {
+      // Authorization: only the user themselves can change their own password
+      if (this.currentUserId !== userId) {
+        throw new Error('You can only change your own password');
+      }
+      const storedHash = this.db.getSetting(`user_password_hash_${userId}`, '');
+      const storedSalt = this.db.getSetting(`user_password_salt_${userId}`, '');
+      if (!storedHash || !storedSalt) throw new Error('No password set');
+      const salt = Buffer.from(storedSalt, 'hex');
+      const hash = memberAuthHash(oldPassword, salt);
+      if (!crypto.timingSafeEqual(hash, Buffer.from(storedHash, 'hex'))) {
+        throw new Error('Incorrect current password');
+      }
+      if (newPassword.length < 4) throw new Error('Password must be at least 4 characters');
+      const newSalt = crypto.randomBytes(32);
+      const newHash = memberAuthHash(newPassword, newSalt);
+      this.db.setSetting(`user_password_hash_${userId}`, newHash.toString('hex'));
+      this.db.setSetting(`user_password_salt_${userId}`, newSalt.toString('hex'));
+
+      // Re-derive UEK and re-wrap encryption keys
+      const userKeys = this.db.getUserKeys(userId);
+      if (userKeys) {
+        const oldEncSalt = Buffer.from(userKeys.encryptionSalt, 'hex');
+        const oldUek = deriveUEK(oldPassword, oldEncSalt);
+
+        // Decrypt private key with old UEK
+        const privateKey = decryptPrivateKey(
+          userKeys.encryptedPrivateKey, userKeys.privateKeyIv, userKeys.privateKeyTag, oldUek
+        );
+
+        // Derive new UEK
+        const newEncSalt = crypto.randomBytes(32);
+        const newUek = deriveUEK(newPassword, newEncSalt);
+
+        // Re-encrypt private key with new UEK
+        const privateKeyDer = privateKey.export({ type: 'pkcs8', format: 'der' });
+        const encPriv = encryptPrivateKey(privateKeyDer as Buffer, newUek);
+
+        // Update user keys
+        this.db.setUserKeys({
+          userId,
+          publicKey: userKeys.publicKey,
+          encryptedPrivateKey: encPriv.ciphertext,
+          privateKeyIv: encPriv.iv,
+          privateKeyTag: encPriv.authTag,
+          encryptionSalt: newEncSalt.toString('hex'),
+          createdAt: userKeys.createdAt,
+        });
+
+        // Re-wrap all DEKs with new UEK
+        const entityTypes: EncryptableEntityType[] = ['account', 'recurring_item', 'savings_goal', 'manual_asset', 'manual_liability', 'investment_account'];
+        for (const entityType of entityTypes) {
+          const items = (() => {
+            switch (entityType) {
+              case 'account': return this.db.getAccounts();
+              case 'recurring_item': return this.db.getRecurringItems();
+              case 'savings_goal': return this.db.getSavingsGoals();
+              case 'manual_asset': return this.db.getManualAssets();
+              case 'manual_liability': return this.db.getManualLiabilities();
+              case 'investment_account': return this.db.getInvestmentAccounts();
+            }
+          })().filter((item: { ownerId?: string | null; isEncrypted?: boolean }) => item.ownerId === userId && item.isEncrypted);
+
+          for (const item of items) {
+            const dekRecord = this.db.getDEK(item.id, entityType);
+            if (!dekRecord) continue;
+
+            try {
+              const dek = unwrapDEKWithUEK(dekRecord.wrappedDek, dekRecord.dekIv, dekRecord.dekTag, oldUek);
+              const wrapped = wrapDEKWithUEK(dek, newUek);
+              this.db.updateDEK(item.id, entityType, {
+                wrappedDek: wrapped.wrappedDek,
+                dekIv: wrapped.iv,
+                dekTag: wrapped.authTag,
+              });
+            } catch {
+              // Skip DEKs that can't be unwrapped
+            }
+          }
+        }
+
+        // Update session
+        sessionKeys.setSession(userId, newUek, privateKey);
+      }
+    });
+
+    secureHandle('security:unlockMember', (_event, userId: string, password: string | null) => {
+      const storedHash = this.db.getSetting(`user_password_hash_${userId}`, '');
+      const storedSalt = this.db.getSetting(`user_password_salt_${userId}`, '');
+
+      if (storedHash && storedSalt) {
+        // User has a password — verify it
+        if (!password) return false;
+        const salt = Buffer.from(storedSalt, 'hex');
+        const hash = memberAuthHash(password, salt);
+        if (!crypto.timingSafeEqual(hash, Buffer.from(storedHash, 'hex'))) {
+          return false;
+        }
+
+        // Derive UEK and load session keys
+        const userKeys = this.db.getUserKeys(userId);
+        if (userKeys) {
+          const encSalt = Buffer.from(userKeys.encryptionSalt, 'hex');
+          const uek = deriveUEK(password, encSalt);
+          const privateKey = decryptPrivateKey(
+            userKeys.encryptedPrivateKey, userKeys.privateKeyIv, userKeys.privateKeyTag, uek
+          );
+          sessionKeys.setSession(userId, uek, privateKey);
+        }
+      }
+      // No password set, or password verified — unlock
+      this.currentUserId = userId;
+      this.isLocked = false;
+
       return true;
     });
 
-    secureHandle('security:heartbeat', () => {
-      // Handled in main.ts auto-lock timer reset
+    // ==================== Sharing ====================
+    secureHandle('sharing:createShare', (_event, entityId: string, entityType: EncryptableEntityType, recipientId: string, permissions: SharePermissions) => {
+      if (!this.currentUserId) throw new Error('Not authenticated');
+      // Get the entity to verify ownership
+      const dekRecord = this.db.getDEK(entityId, entityType);
+      if (!dekRecord || dekRecord.ownerId !== this.currentUserId) {
+        throw new Error('Not the owner of this entity');
+      }
+      // Unwrap DEK with owner's UEK
+      const session = sessionKeys.getSession(this.currentUserId);
+      if (!session) throw new Error('Session not available');
+      const dek = unwrapDEKWithUEK(dekRecord.wrappedDek, dekRecord.dekIv, dekRecord.dekTag, session.uek);
+
+      // Get recipient's public key and wrap DEK for them
+      const recipientKeys = this.db.getUserKeys(recipientId);
+      if (!recipientKeys) throw new Error('Recipient has no encryption keys');
+      const wrappedDek = wrapDEKWithRSA(dek, recipientKeys.publicKey);
+
+      return this.db.createShare({
+        entityId,
+        entityType,
+        ownerId: this.currentUserId,
+        recipientId,
+        wrappedDek,
+        permissions,
+      });
+    });
+
+    secureHandle('sharing:revokeShare', (_event, shareId: string) => {
+      return this.db.deleteShare(shareId);
+    });
+
+    secureHandle('sharing:updatePermissions', (_event, shareId: string, permissions: SharePermissions) => {
+      return this.db.updateSharePermissions(shareId, permissions);
+    });
+
+    secureHandle('sharing:getSharesForEntity', (_event, entityId: string, entityType: EncryptableEntityType) => {
+      return this.db.getSharesForEntity(entityId, entityType);
+    });
+
+    secureHandle('sharing:getSharedWithMe', () => {
+      if (!this.currentUserId) return [];
+      return this.db.getSharesForRecipient(this.currentUserId);
+    });
+
+    secureHandle('sharing:getDefaults', (_event, ownerId: string, entityType?: EncryptableEntityType) => {
+      return this.db.getSharingDefaults(ownerId, entityType);
+    });
+
+    secureHandle('sharing:setDefault', (_event, ownerId: string, recipientId: string, entityType: EncryptableEntityType, permissions: SharePermissions) => {
+      return this.db.setSharingDefault({
+        ownerId,
+        recipientId,
+        entityType,
+        permissions,
+      });
+    });
+
+    secureHandle('sharing:removeDefault', (_event, defaultId: string) => {
+      return this.db.deleteSharingDefault(defaultId);
     });
 
     // ==================== Onboarding ====================
@@ -2620,6 +3647,46 @@ export class IPCHandlers {
 
     secureHandle('onboarding:setComplete', (_event, value: string) => {
       this.db.setSetting('onboarding_completed', value);
+    });
+
+    // ==================== Tutorials ====================
+    secureHandle('tutorials:isCompleted', (_event, toolId: string) => {
+      return this.db.getSetting(`tutorial_completed_${toolId}`, 'false');
+    });
+
+    secureHandle('tutorials:markCompleted', (_event, toolId: string) => {
+      this.db.setSetting(`tutorial_completed_${toolId}`, 'true');
+    });
+
+    secureHandle('tutorials:resetAll', () => {
+      const toolIds = [
+        'spending', 'trends', 'velocity', 'seasonal',
+        'income-vs-expenses', 'income-analysis',
+        'cashflow', 'category-forecast',
+        'health', 'recovery', 'simulator', 'emergency', 'debt',
+        'month-review', 'year-review',
+        'anomalies', 'subscriptions', 'migration',
+      ];
+      for (const id of toolIds) {
+        this.db.setSetting(`tutorial_completed_${id}`, 'false');
+      }
+    });
+
+    // ==================== Dashboard Layout ====================
+    secureHandle('dashboardLayout:get', () => {
+      return this.db.getSetting('dashboardLayout', '');
+    });
+
+    secureHandle('dashboardLayout:set', (_event, layout: string) => {
+      this.db.setSetting('dashboardLayout', layout);
+    });
+
+    secureHandle('dashboardWidgets:get', () => {
+      return this.db.getSetting('dashboardVisibleWidgets', '');
+    });
+
+    secureHandle('dashboardWidgets:set', (_event, widgets: string) => {
+      this.db.setSetting('dashboardVisibleWidgets', widgets);
     });
 
     secureHandle('app:restart', async () => {
@@ -2686,6 +3753,13 @@ export class IPCHandlers {
 
   removeHandlers(): void {
     // Remove all registered handlers
+    ipcMain.removeHandler('users:getAll');
+    ipcMain.removeHandler('users:getById');
+    ipcMain.removeHandler('users:getDefault');
+    ipcMain.removeHandler('users:create');
+    ipcMain.removeHandler('users:update');
+    ipcMain.removeHandler('users:delete');
+
     ipcMain.removeHandler('accounts:getAll');
     ipcMain.removeHandler('accounts:getById');
     ipcMain.removeHandler('accounts:create');
@@ -2900,6 +3974,15 @@ export class IPCHandlers {
     ipcMain.removeHandler('receipts:update');
     ipcMain.removeHandler('receipts:delete');
 
+    // Transaction Attachments
+    ipcMain.removeHandler('attachments:getByTransaction');
+    ipcMain.removeHandler('attachments:getById');
+    ipcMain.removeHandler('attachments:add');
+    ipcMain.removeHandler('attachments:delete');
+    ipcMain.removeHandler('attachments:open');
+    ipcMain.removeHandler('attachments:getCountsByTransactionIds');
+    ipcMain.removeHandler('attachments:selectFile');
+
     // Unified Recurring Items
     ipcMain.removeHandler('recurring:getAll');
     ipcMain.removeHandler('recurring:getActive');
@@ -2912,6 +3995,7 @@ export class IPCHandlers {
     ipcMain.removeHandler('recurringPayments:getAll');
     ipcMain.removeHandler('recurringPayments:getById');
     ipcMain.removeHandler('recurringPayments:getUpcoming');
+    ipcMain.removeHandler('recurringPayments:getByDateRange');
     ipcMain.removeHandler('recurringPayments:create');
     ipcMain.removeHandler('recurringPayments:update');
     ipcMain.removeHandler('recurringPayments:delete');
@@ -2995,25 +4079,81 @@ export class IPCHandlers {
     ipcMain.removeHandler('reimbursements:validate');
     ipcMain.removeHandler('reimbursements:getCandidates');
 
+    // Budget Settings (Flex Mode)
+    ipcMain.removeHandler('budgetSettings:getMode');
+    ipcMain.removeHandler('budgetSettings:setMode');
+    ipcMain.removeHandler('budgetSettings:getFlexTarget');
+    ipcMain.removeHandler('budgetSettings:setFlexTarget');
+    ipcMain.removeHandler('budgetSettings:getFixedCategoryIds');
+    ipcMain.removeHandler('budgetSettings:setFixedCategoryIds');
+
     // Budget Income Override
     ipcMain.removeHandler('budgetIncome:getOverride');
     ipcMain.removeHandler('budgetIncome:setOverride');
 
+    // Saved Reports
+    ipcMain.removeHandler('savedReports:getAll');
+    ipcMain.removeHandler('savedReports:getById');
+    ipcMain.removeHandler('savedReports:create');
+    ipcMain.removeHandler('savedReports:update');
+    ipcMain.removeHandler('savedReports:delete');
+    ipcMain.removeHandler('savedReports:getRecent');
+
     // Security
-    ipcMain.removeHandler('security:getStatus');
-    ipcMain.removeHandler('security:enable');
-    ipcMain.removeHandler('security:disable');
-    ipcMain.removeHandler('security:changePassword');
-    ipcMain.removeHandler('security:updateAutoLock');
     ipcMain.removeHandler('security:lock');
-    ipcMain.removeHandler('security:unlock');
-    ipcMain.removeHandler('security:heartbeat');
+    ipcMain.removeHandler('security:getAutoLock');
+    ipcMain.removeHandler('security:setAutoLock');
+    ipcMain.removeHandler('security:getMemberAuthStatus');
+    ipcMain.removeHandler('security:enableMemberPassword');
+    ipcMain.removeHandler('security:disableMemberPassword');
+    ipcMain.removeHandler('security:changeMemberPassword');
+    ipcMain.removeHandler('security:unlockMember');
+
+    // Sharing
+    ipcMain.removeHandler('sharing:createShare');
+    ipcMain.removeHandler('sharing:revokeShare');
+    ipcMain.removeHandler('sharing:updatePermissions');
+    ipcMain.removeHandler('sharing:getSharesForEntity');
+    ipcMain.removeHandler('sharing:getSharedWithMe');
+    ipcMain.removeHandler('sharing:getDefaults');
+    ipcMain.removeHandler('sharing:setDefault');
+    ipcMain.removeHandler('sharing:removeDefault');
 
     // Onboarding
     ipcMain.removeHandler('onboarding:getStatus');
     ipcMain.removeHandler('onboarding:setComplete');
 
+    // Tutorials
+    ipcMain.removeHandler('tutorials:isCompleted');
+    ipcMain.removeHandler('tutorials:markCompleted');
+    ipcMain.removeHandler('tutorials:resetAll');
+
+    // Dashboard Layout
+    ipcMain.removeHandler('dashboardLayout:get');
+    ipcMain.removeHandler('dashboardLayout:set');
+    ipcMain.removeHandler('dashboardWidgets:get');
+    ipcMain.removeHandler('dashboardWidgets:set');
+
     // Shell
     ipcMain.removeHandler('shell:openExternal');
+  }
+
+  private getMimeType(ext: string): string {
+    const mimeTypes: Record<string, string> = {
+      '.png': 'image/png',
+      '.jpg': 'image/jpeg',
+      '.jpeg': 'image/jpeg',
+      '.gif': 'image/gif',
+      '.bmp': 'image/bmp',
+      '.webp': 'image/webp',
+      '.pdf': 'application/pdf',
+      '.doc': 'application/msword',
+      '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      '.xls': 'application/vnd.ms-excel',
+      '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      '.txt': 'text/plain',
+      '.csv': 'text/csv',
+    };
+    return mimeTypes[ext.toLowerCase()] || 'application/octet-stream';
   }
 }

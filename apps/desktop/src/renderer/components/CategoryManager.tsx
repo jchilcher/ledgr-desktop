@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { Category, TransactionType } from '../../shared/types';
 import { useInlineEdit } from '../hooks/useInlineEdit';
 import { EditableText, EditableSelect } from './inline-edit';
@@ -10,11 +10,334 @@ const DEFAULT_COLORS = [
   '#EC4899', '#F43F5E', '#78716C', '#71717A', '#64748B',
 ];
 
-const CATEGORY_ICONS = [
-  '🛒', '🍽️', '🏠', '💡', '⛽', '🚗', '⚕️', '🎬', '🛍️', '📱',
-  '💰', '💼', '📝', '📈', '↩️', '💵', '🏦', '🔄', '✈️', '🎄',
-  '🎁', '🏋️', '📚', '🎮', '🐾', '👶', '💄', '🔧', '🏥', '🎓',
+interface EmojiEntry {
+  emoji: string;
+  keywords: string[];
+}
+
+interface EmojiGroup {
+  name: string;
+  emojis: EmojiEntry[];
+}
+
+const EMOJI_GROUPS: EmojiGroup[] = [
+  {
+    name: 'Suggested',
+    emojis: [
+      { emoji: '🛒', keywords: ['cart', 'shopping', 'grocery'] },
+      { emoji: '🍽️', keywords: ['dining', 'food', 'restaurant', 'plate'] },
+      { emoji: '🏠', keywords: ['home', 'house', 'rent', 'mortgage'] },
+      { emoji: '💡', keywords: ['light', 'electric', 'utility', 'idea'] },
+      { emoji: '⛽', keywords: ['gas', 'fuel', 'petrol'] },
+      { emoji: '🚗', keywords: ['car', 'auto', 'vehicle', 'drive'] },
+      { emoji: '⚕️', keywords: ['health', 'medical', 'doctor'] },
+      { emoji: '🎬', keywords: ['movie', 'film', 'entertainment'] },
+      { emoji: '🛍️', keywords: ['shopping', 'bag', 'retail'] },
+      { emoji: '📱', keywords: ['phone', 'mobile', 'cell'] },
+      { emoji: '💰', keywords: ['money', 'savings', 'cash'] },
+      { emoji: '💼', keywords: ['work', 'business', 'briefcase', 'job'] },
+      { emoji: '📝', keywords: ['note', 'memo', 'write'] },
+      { emoji: '📈', keywords: ['chart', 'growth', 'invest', 'stock'] },
+      { emoji: '↩️', keywords: ['return', 'refund', 'back'] },
+      { emoji: '💵', keywords: ['dollar', 'cash', 'money', 'bill'] },
+      { emoji: '🏦', keywords: ['bank', 'finance', 'institution'] },
+      { emoji: '🔄', keywords: ['sync', 'recurring', 'repeat', 'transfer'] },
+      { emoji: '✈️', keywords: ['travel', 'flight', 'airplane', 'vacation'] },
+      { emoji: '🎄', keywords: ['christmas', 'holiday', 'seasonal'] },
+      { emoji: '🎁', keywords: ['gift', 'present', 'birthday'] },
+      { emoji: '🏋️', keywords: ['gym', 'fitness', 'exercise', 'workout'] },
+      { emoji: '📚', keywords: ['book', 'education', 'study', 'reading'] },
+      { emoji: '🎮', keywords: ['game', 'gaming', 'video game'] },
+      { emoji: '🐾', keywords: ['pet', 'animal', 'dog', 'cat'] },
+      { emoji: '👶', keywords: ['baby', 'child', 'kids', 'family'] },
+      { emoji: '💄', keywords: ['beauty', 'cosmetics', 'makeup'] },
+      { emoji: '🔧', keywords: ['tools', 'repair', 'maintenance', 'fix'] },
+      { emoji: '🏥', keywords: ['hospital', 'health', 'medical', 'emergency'] },
+      { emoji: '🎓', keywords: ['graduation', 'education', 'school', 'tuition'] },
+    ],
+  },
+  {
+    name: 'Food & Drink',
+    emojis: [
+      { emoji: '🍕', keywords: ['pizza', 'food', 'fast food'] },
+      { emoji: '🍔', keywords: ['burger', 'hamburger', 'fast food'] },
+      { emoji: '🍜', keywords: ['noodles', 'ramen', 'soup'] },
+      { emoji: '🍣', keywords: ['sushi', 'japanese', 'fish'] },
+      { emoji: '🥗', keywords: ['salad', 'healthy', 'vegetables'] },
+      { emoji: '🍳', keywords: ['egg', 'breakfast', 'cooking'] },
+      { emoji: '🥐', keywords: ['croissant', 'bakery', 'pastry'] },
+      { emoji: '🍞', keywords: ['bread', 'bakery', 'loaf'] },
+      { emoji: '🥩', keywords: ['meat', 'steak', 'beef'] },
+      { emoji: '🍎', keywords: ['apple', 'fruit', 'healthy'] },
+      { emoji: '🥑', keywords: ['avocado', 'fruit', 'healthy'] },
+      { emoji: '🍰', keywords: ['cake', 'dessert', 'sweet'] },
+      { emoji: '🍩', keywords: ['donut', 'dessert', 'sweet'] },
+      { emoji: '☕', keywords: ['coffee', 'cafe', 'drink', 'hot'] },
+      { emoji: '🍺', keywords: ['beer', 'alcohol', 'drink', 'bar'] },
+      { emoji: '🍷', keywords: ['wine', 'alcohol', 'drink'] },
+      { emoji: '🥤', keywords: ['drink', 'soda', 'beverage', 'cup'] },
+      { emoji: '🧃', keywords: ['juice', 'drink', 'box'] },
+      { emoji: '🍶', keywords: ['sake', 'drink', 'japanese'] },
+      { emoji: '🧁', keywords: ['cupcake', 'dessert', 'sweet'] },
+    ],
+  },
+  {
+    name: 'Transport',
+    emojis: [
+      { emoji: '🚌', keywords: ['bus', 'transit', 'public transport'] },
+      { emoji: '🚇', keywords: ['metro', 'subway', 'train', 'transit'] },
+      { emoji: '🚕', keywords: ['taxi', 'cab', 'ride'] },
+      { emoji: '🚲', keywords: ['bicycle', 'bike', 'cycling'] },
+      { emoji: '🛵', keywords: ['scooter', 'moped', 'motorcycle'] },
+      { emoji: '🚂', keywords: ['train', 'rail', 'transit'] },
+      { emoji: '🚢', keywords: ['ship', 'boat', 'cruise', 'ferry'] },
+      { emoji: '🛫', keywords: ['departure', 'flight', 'airplane'] },
+      { emoji: '🛬', keywords: ['arrival', 'flight', 'airplane'] },
+      { emoji: '🚁', keywords: ['helicopter', 'flight'] },
+      { emoji: '🛻', keywords: ['truck', 'pickup', 'vehicle'] },
+      { emoji: '🏍️', keywords: ['motorcycle', 'motorbike'] },
+      { emoji: '🅿️', keywords: ['parking', 'car', 'lot'] },
+      { emoji: '🛣️', keywords: ['road', 'highway', 'toll'] },
+      { emoji: '⚓', keywords: ['anchor', 'boat', 'marina'] },
+    ],
+  },
+  {
+    name: 'Activities',
+    emojis: [
+      { emoji: '🎭', keywords: ['theater', 'arts', 'drama', 'performance'] },
+      { emoji: '🎵', keywords: ['music', 'concert', 'audio'] },
+      { emoji: '🎧', keywords: ['headphones', 'music', 'audio', 'podcast'] },
+      { emoji: '🎤', keywords: ['microphone', 'karaoke', 'singing'] },
+      { emoji: '🎨', keywords: ['art', 'paint', 'creative'] },
+      { emoji: '📷', keywords: ['camera', 'photo', 'photography'] },
+      { emoji: '🎯', keywords: ['target', 'goal', 'hobby'] },
+      { emoji: '🎳', keywords: ['bowling', 'sport', 'game'] },
+      { emoji: '⚽', keywords: ['soccer', 'football', 'sport'] },
+      { emoji: '🏀', keywords: ['basketball', 'sport'] },
+      { emoji: '🎾', keywords: ['tennis', 'sport', 'racket'] },
+      { emoji: '⛷️', keywords: ['skiing', 'winter', 'sport'] },
+      { emoji: '🏊', keywords: ['swimming', 'pool', 'sport'] },
+      { emoji: '🧘', keywords: ['yoga', 'meditation', 'wellness'] },
+      { emoji: '🎪', keywords: ['circus', 'carnival', 'event'] },
+    ],
+  },
+  {
+    name: 'Shopping',
+    emojis: [
+      { emoji: '👗', keywords: ['dress', 'clothing', 'fashion'] },
+      { emoji: '👟', keywords: ['shoes', 'sneakers', 'footwear'] },
+      { emoji: '👜', keywords: ['handbag', 'purse', 'bag'] },
+      { emoji: '💎', keywords: ['gem', 'jewelry', 'diamond'] },
+      { emoji: '⌚', keywords: ['watch', 'time', 'accessory'] },
+      { emoji: '👓', keywords: ['glasses', 'eyewear', 'optical'] },
+      { emoji: '🧢', keywords: ['cap', 'hat', 'clothing'] },
+      { emoji: '🎒', keywords: ['backpack', 'bag', 'school'] },
+      { emoji: '🧸', keywords: ['toy', 'teddy bear', 'kids'] },
+      { emoji: '💻', keywords: ['laptop', 'computer', 'tech'] },
+      { emoji: '🖥️', keywords: ['desktop', 'computer', 'monitor'] },
+      { emoji: '🎧', keywords: ['headphones', 'audio', 'electronics'] },
+      { emoji: '📦', keywords: ['package', 'delivery', 'box', 'shipping'] },
+      { emoji: '🏷️', keywords: ['tag', 'price', 'label', 'sale'] },
+      { emoji: '🧴', keywords: ['lotion', 'skincare', 'personal care'] },
+    ],
+  },
+  {
+    name: 'Home',
+    emojis: [
+      { emoji: '🏡', keywords: ['house', 'garden', 'property'] },
+      { emoji: '🛋️', keywords: ['couch', 'sofa', 'furniture'] },
+      { emoji: '🛏️', keywords: ['bed', 'bedroom', 'furniture'] },
+      { emoji: '🚿', keywords: ['shower', 'bathroom', 'plumbing'] },
+      { emoji: '🧹', keywords: ['broom', 'cleaning', 'housework'] },
+      { emoji: '🧺', keywords: ['laundry', 'basket', 'cleaning'] },
+      { emoji: '🪴', keywords: ['plant', 'garden', 'potted'] },
+      { emoji: '🔑', keywords: ['key', 'lock', 'security', 'rent'] },
+      { emoji: '🪟', keywords: ['window', 'house', 'repair'] },
+      { emoji: '🏗️', keywords: ['construction', 'renovation', 'building'] },
+      { emoji: '🧰', keywords: ['toolbox', 'repair', 'maintenance'] },
+      { emoji: '💧', keywords: ['water', 'utility', 'drop'] },
+      { emoji: '🔥', keywords: ['fire', 'heating', 'gas'] },
+      { emoji: '❄️', keywords: ['cold', 'ac', 'cooling', 'winter'] },
+      { emoji: '📺', keywords: ['tv', 'television', 'streaming'] },
+    ],
+  },
+  {
+    name: 'Finance',
+    emojis: [
+      { emoji: '💳', keywords: ['credit card', 'payment', 'bank'] },
+      { emoji: '🏧', keywords: ['atm', 'bank', 'cash'] },
+      { emoji: '💹', keywords: ['chart', 'stock', 'market', 'growth'] },
+      { emoji: '📊', keywords: ['bar chart', 'statistics', 'report'] },
+      { emoji: '🧾', keywords: ['receipt', 'bill', 'invoice'] },
+      { emoji: '💲', keywords: ['dollar', 'money', 'price'] },
+      { emoji: '🪙', keywords: ['coin', 'money', 'savings'] },
+      { emoji: '📉', keywords: ['chart down', 'loss', 'decline'] },
+      { emoji: '🏛️', keywords: ['bank', 'government', 'institution'] },
+      { emoji: '📋', keywords: ['clipboard', 'list', 'checklist', 'budget'] },
+      { emoji: '🔐', keywords: ['lock', 'security', 'safe'] },
+      { emoji: '📑', keywords: ['document', 'tabs', 'paperwork'] },
+      { emoji: '✉️', keywords: ['mail', 'letter', 'envelope'] },
+      { emoji: '🤝', keywords: ['handshake', 'deal', 'agreement'] },
+      { emoji: '⚖️', keywords: ['balance', 'scale', 'justice', 'legal'] },
+    ],
+  },
+  {
+    name: 'Health',
+    emojis: [
+      { emoji: '💊', keywords: ['pill', 'medicine', 'pharmacy'] },
+      { emoji: '🩺', keywords: ['stethoscope', 'doctor', 'checkup'] },
+      { emoji: '🦷', keywords: ['tooth', 'dental', 'dentist'] },
+      { emoji: '👁️', keywords: ['eye', 'vision', 'optical'] },
+      { emoji: '🩹', keywords: ['bandage', 'first aid', 'injury'] },
+      { emoji: '💉', keywords: ['syringe', 'vaccine', 'injection'] },
+      { emoji: '🧬', keywords: ['dna', 'genetics', 'science'] },
+      { emoji: '🏃', keywords: ['running', 'exercise', 'fitness'] },
+      { emoji: '🥦', keywords: ['broccoli', 'healthy', 'nutrition'] },
+      { emoji: '😴', keywords: ['sleep', 'rest', 'wellness'] },
+      { emoji: '🧘', keywords: ['yoga', 'meditation', 'mental health'] },
+      { emoji: '♿', keywords: ['wheelchair', 'accessibility', 'disability'] },
+      { emoji: '🌡️', keywords: ['thermometer', 'temperature', 'sick'] },
+      { emoji: '🫀', keywords: ['heart', 'cardio', 'health'] },
+      { emoji: '🧠', keywords: ['brain', 'mental health', 'therapy'] },
+    ],
+  },
+  {
+    name: 'Nature',
+    emojis: [
+      { emoji: '🌳', keywords: ['tree', 'nature', 'park'] },
+      { emoji: '🌊', keywords: ['wave', 'ocean', 'beach'] },
+      { emoji: '⛰️', keywords: ['mountain', 'hiking', 'outdoor'] },
+      { emoji: '🏕️', keywords: ['camping', 'tent', 'outdoor'] },
+      { emoji: '🌿', keywords: ['herb', 'plant', 'nature'] },
+      { emoji: '🌸', keywords: ['flower', 'blossom', 'spring'] },
+      { emoji: '🌻', keywords: ['sunflower', 'garden', 'flower'] },
+      { emoji: '☀️', keywords: ['sun', 'summer', 'weather'] },
+      { emoji: '🌧️', keywords: ['rain', 'weather', 'umbrella'] },
+      { emoji: '🐶', keywords: ['dog', 'pet', 'puppy'] },
+      { emoji: '🐱', keywords: ['cat', 'pet', 'kitten'] },
+      { emoji: '🐟', keywords: ['fish', 'aquarium', 'pet'] },
+      { emoji: '🦜', keywords: ['parrot', 'bird', 'pet'] },
+      { emoji: '🐴', keywords: ['horse', 'equestrian', 'riding'] },
+      { emoji: '🌍', keywords: ['earth', 'world', 'globe', 'travel'] },
+    ],
+  },
+  {
+    name: 'Objects',
+    emojis: [
+      { emoji: '🔔', keywords: ['bell', 'notification', 'alert'] },
+      { emoji: '📅', keywords: ['calendar', 'date', 'schedule'] },
+      { emoji: '⏰', keywords: ['alarm', 'clock', 'time'] },
+      { emoji: '🗂️', keywords: ['folder', 'file', 'organize'] },
+      { emoji: '✂️', keywords: ['scissors', 'cut', 'craft'] },
+      { emoji: '📎', keywords: ['paperclip', 'attach', 'office'] },
+      { emoji: '🖨️', keywords: ['printer', 'print', 'office'] },
+      { emoji: '💡', keywords: ['lightbulb', 'idea', 'electric'] },
+      { emoji: '🔋', keywords: ['battery', 'power', 'charge'] },
+      { emoji: '📡', keywords: ['satellite', 'internet', 'wifi'] },
+      { emoji: '🧲', keywords: ['magnet', 'attract'] },
+      { emoji: '🪣', keywords: ['bucket', 'cleaning'] },
+      { emoji: '🧳', keywords: ['luggage', 'travel', 'suitcase'] },
+      { emoji: '🎒', keywords: ['backpack', 'school', 'travel'] },
+      { emoji: '🪞', keywords: ['mirror', 'reflection', 'beauty'] },
+    ],
+  },
+  {
+    name: 'Symbols',
+    emojis: [
+      { emoji: '✅', keywords: ['check', 'done', 'complete', 'yes'] },
+      { emoji: '❌', keywords: ['cross', 'no', 'cancel', 'delete'] },
+      { emoji: '⭐', keywords: ['star', 'favorite', 'rating'] },
+      { emoji: '❤️', keywords: ['heart', 'love', 'favorite'] },
+      { emoji: '🔴', keywords: ['red circle', 'dot', 'stop'] },
+      { emoji: '🟢', keywords: ['green circle', 'dot', 'go'] },
+      { emoji: '🔵', keywords: ['blue circle', 'dot'] },
+      { emoji: '🟡', keywords: ['yellow circle', 'dot', 'warning'] },
+      { emoji: '⚡', keywords: ['lightning', 'bolt', 'electric', 'fast'] },
+      { emoji: '🔗', keywords: ['link', 'chain', 'connect'] },
+      { emoji: '♻️', keywords: ['recycle', 'reuse', 'green'] },
+      { emoji: '🚫', keywords: ['prohibited', 'no', 'forbidden'] },
+      { emoji: '➕', keywords: ['plus', 'add', 'new'] },
+      { emoji: '➖', keywords: ['minus', 'subtract', 'remove'] },
+      { emoji: '🏷️', keywords: ['label', 'tag', 'price'] },
+    ],
+  },
 ];
+
+const ALL_EMOJIS = EMOJI_GROUPS.flatMap((g) => g.emojis);
+const DEFAULT_EMOJI = EMOJI_GROUPS[0].emojis[0].emoji;
+
+function EmojiPicker({
+  selected,
+  onSelect,
+  disabled,
+  compact,
+}: {
+  selected: string;
+  onSelect: (emoji: string) => void;
+  disabled?: boolean;
+  compact?: boolean;
+}) {
+  const [search, setSearch] = useState('');
+
+  const filteredGroups = useMemo(() => {
+    if (!search.trim()) return EMOJI_GROUPS;
+    const query = search.toLowerCase();
+    const results: EmojiEntry[] = [];
+    const seen = new Set<string>();
+    for (const entry of ALL_EMOJIS) {
+      if (seen.has(entry.emoji)) continue;
+      if (entry.keywords.some((k) => k.includes(query)) || entry.emoji === query) {
+        seen.add(entry.emoji);
+        results.push(entry);
+      }
+    }
+    if (results.length === 0) return [];
+    return [{ name: 'Results', emojis: results }];
+  }, [search]);
+
+  const btnSize = compact ? '28px' : '36px';
+  const fontSize = compact ? '14px' : '18px';
+
+  return (
+    <div className="emoji-picker">
+      <input
+        type="text"
+        className="emoji-search"
+        placeholder="Search emojis..."
+        value={search}
+        onChange={(e) => setSearch(e.target.value)}
+        disabled={disabled}
+      />
+      <div className="emoji-picker-scroll">
+        {filteredGroups.length === 0 && (
+          <div style={{ padding: '12px', color: 'var(--color-text-muted)', fontSize: '13px' }}>
+            No emojis found
+          </div>
+        )}
+        {filteredGroups.map((group) => (
+          <div key={group.name} className="emoji-group">
+            <div className="emoji-group-header">{group.name}</div>
+            <div className="emoji-group-grid">
+              {group.emojis.map((entry) => (
+                <button
+                  key={`${group.name}-${entry.emoji}`}
+                  type="button"
+                  className={`emoji-btn${selected === entry.emoji ? ' emoji-btn--selected' : ''}`}
+                  onClick={() => onSelect(entry.emoji)}
+                  disabled={disabled}
+                  title={entry.keywords.join(', ')}
+                  style={{ width: btnSize, height: btnSize, fontSize }}
+                >
+                  {entry.emoji}
+                </button>
+              ))}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
 
 const TYPE_OPTIONS = [
   { value: 'expense', label: 'Expense' },
@@ -36,7 +359,7 @@ export default function CategoryManager() {
   const [showForm, setShowForm] = useState(false);
   const [formName, setFormName] = useState('');
   const [formType, setFormType] = useState<TransactionType>('expense');
-  const [formIcon, setFormIcon] = useState(CATEGORY_ICONS[0]);
+  const [formIcon, setFormIcon] = useState(DEFAULT_EMOJI);
   const [formColor, setFormColor] = useState(DEFAULT_COLORS[0]);
   const [error, setError] = useState('');
   const [filterType, setFilterType] = useState<'all' | 'income' | 'expense'>('all');
@@ -133,7 +456,7 @@ export default function CategoryManager() {
       id: category.id,
       name: category.name,
       type: category.type,
-      icon: category.icon || CATEGORY_ICONS[0],
+      icon: category.icon || DEFAULT_EMOJI,
       color: category.color || DEFAULT_COLORS[0],
       isDefault: category.isDefault,
     });
@@ -159,7 +482,7 @@ export default function CategoryManager() {
     setShowForm(false);
     setFormName('');
     setFormType('expense');
-    setFormIcon(CATEGORY_ICONS[0]);
+    setFormIcon(DEFAULT_EMOJI);
     setFormColor(DEFAULT_COLORS[0]);
     setError('');
   };
@@ -226,31 +549,15 @@ export default function CategoryManager() {
             )}
 
             {/* Row 3: Icon */}
-            <div className="inline-edit-grid-row">
-              <span className="inline-edit-grid-label" style={{ minWidth: '50px' }}>Icon</span>
-              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px' }}>
-                {CATEGORY_ICONS.slice(0, 15).map((icon) => (
-                  <button
-                    key={icon}
-                    type="button"
-                    onClick={() => inlineEdit.updateField('icon', icon)}
-                    style={{
-                      width: '28px',
-                      height: '28px',
-                      borderRadius: 'var(--radius-sm)',
-                      backgroundColor: editData.icon === icon ? 'var(--color-primary)' : 'var(--color-surface)',
-                      border: editData.icon === icon ? '2px solid var(--color-primary)' : '1px solid var(--color-border)',
-                      cursor: 'pointer',
-                      fontSize: '14px',
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                    }}
-                    disabled={inlineEdit.isSubmitting}
-                  >
-                    {icon}
-                  </button>
-                ))}
+            <div className="inline-edit-grid-row" style={{ alignItems: 'flex-start' }}>
+              <span className="inline-edit-grid-label" style={{ minWidth: '50px', paddingTop: '6px' }}>Icon</span>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <EmojiPicker
+                  selected={editData.icon}
+                  onSelect={(emoji) => inlineEdit.updateField('icon', emoji)}
+                  disabled={inlineEdit.isSubmitting}
+                  compact
+                />
               </div>
             </div>
 
@@ -417,29 +724,11 @@ export default function CategoryManager() {
           </div>
           <div style={{ marginBottom: '12px' }}>
             <label style={{ display: 'block', marginBottom: '4px', fontWeight: 500 }}>Icon</label>
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
-              {CATEGORY_ICONS.map((icon) => (
-                <button
-                  key={icon}
-                  type="button"
-                  onClick={() => setFormIcon(icon)}
-                  style={{
-                    width: '36px',
-                    height: '36px',
-                    borderRadius: 'var(--radius-sm)',
-                    backgroundColor: formIcon === icon ? 'var(--color-primary)' : 'var(--color-surface)',
-                    border: formIcon === icon ? '2px solid var(--color-primary)' : '1px solid var(--color-border)',
-                    cursor: 'pointer',
-                    fontSize: '18px',
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                  }}
-                >
-                  {icon}
-                </button>
-              ))}
-            </div>
+            <EmojiPicker
+              selected={formIcon}
+              onSelect={setFormIcon}
+              disabled={loading}
+            />
           </div>
           <div style={{ marginBottom: '12px' }}>
             <label style={{ display: 'block', marginBottom: '4px', fontWeight: 500 }}>Color</label>

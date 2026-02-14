@@ -1,4 +1,6 @@
 import React, { useState, useEffect, useMemo } from 'react';
+import type { RecurringPaymentWithItem } from '../../shared/types';
+import { useHousehold } from '../contexts/HouseholdContext';
 
 interface CashFlowProjectionPoint {
   date: Date;
@@ -72,6 +74,15 @@ interface CashFlowOptimizationReport {
   insights: string[];
 }
 
+interface CalendarPaymentItem {
+  id: string;
+  name: string;
+  amount: number;
+  status: 'paid' | 'pending' | 'overdue' | 'skipped';
+  amountDiffers: boolean;
+  itemType: string;
+}
+
 interface CalendarDay {
   date: Date;
   dayOfMonth: number;
@@ -82,6 +93,7 @@ interface CalendarDay {
   hasIncome: boolean;
   hasExpense: boolean;
   itemCount: number;
+  payments: CalendarPaymentItem[];
 }
 
 // Extended forecast periods
@@ -97,7 +109,33 @@ const PROJECTION_PERIODS = [
 
 const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
+type PaymentPriority = 'overdue' | 'pending' | 'amount-differs' | 'paid' | 'skipped';
+
+const getTopPaymentStatus = (payments: CalendarPaymentItem[]): PaymentPriority | null => {
+  if (payments.length === 0) return null;
+  const priorities: PaymentPriority[] = ['overdue', 'pending', 'amount-differs', 'paid', 'skipped'];
+  for (const priority of priorities) {
+    if (priority === 'amount-differs') {
+      if (payments.some(p => p.status === 'paid' && p.amountDiffers)) return 'amount-differs';
+    } else {
+      if (payments.some(p => p.status === priority)) return priority;
+    }
+  }
+  return null;
+};
+
+const getStatusClassName = (status: PaymentPriority): string => {
+  switch (status) {
+    case 'overdue': return 'calendar-day--overdue';
+    case 'pending': return 'calendar-day--pending';
+    case 'amount-differs': return 'calendar-day--amount-differs';
+    case 'paid': return 'calendar-day--paid';
+    case 'skipped': return 'calendar-day--skipped';
+  }
+};
+
 const BillCalendar: React.FC = () => {
+  const { householdFilter } = useHousehold();
   const [report, setReport] = useState<CashFlowOptimizationReport | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -107,10 +145,16 @@ const BillCalendar: React.FC = () => {
     month: new Date().getMonth(),
   }));
   const [selectedDay, setSelectedDay] = useState<CalendarDay | null>(null);
+  const [cashFlowExpanded, setCashFlowExpanded] = useState(false);
+  const [monthPayments, setMonthPayments] = useState<RecurringPaymentWithItem[]>([]);
 
   useEffect(() => {
     loadData();
-  }, [projectionDays]);
+  }, [projectionDays, householdFilter]);
+
+  useEffect(() => {
+    loadMonthPayments();
+  }, [currentMonth]);
 
   const loadData = async () => {
     try {
@@ -124,6 +168,39 @@ const BillCalendar: React.FC = () => {
       setLoading(false);
     }
   };
+
+  const loadMonthPayments = async () => {
+    try {
+      const monthStart = new Date(currentMonth.year, currentMonth.month, 1);
+      const monthEnd = new Date(currentMonth.year, currentMonth.month + 1, 0);
+      const startStr = monthStart.toISOString().split('T')[0];
+      const endStr = monthEnd.toISOString().split('T')[0];
+      const payments = await window.api.recurringPayments.getByDateRange(startStr, endStr);
+      setMonthPayments(payments);
+    } catch {
+      // Non-critical: calendar still works without payment data
+    }
+  };
+
+  // Build paymentsByDate map
+  const paymentsByDate = useMemo(() => {
+    const map = new Map<string, CalendarPaymentItem[]>();
+    for (const payment of monthPayments) {
+      const dateKey = new Date(payment.dueDate).toISOString().split('T')[0];
+      const item: CalendarPaymentItem = {
+        id: payment.id,
+        name: payment.description,
+        amount: payment.amount,
+        status: payment.status,
+        amountDiffers: payment.status === 'paid' && payment.amount !== payment.itemAmount,
+        itemType: payment.itemType,
+      };
+      const existing = map.get(dateKey) || [];
+      existing.push(item);
+      map.set(dateKey, existing);
+    }
+    return map;
+  }, [monthPayments]);
 
   // Create Map for O(1) lookups by date string "YYYY-MM-DD"
   const projectionMap = useMemo(() => {
@@ -149,6 +226,22 @@ const BillCalendar: React.FC = () => {
     });
     return set;
   }, [report]);
+
+  // Split month payments into upcoming and completed
+  const { upcomingPayments, completedPayments } = useMemo(() => {
+    const upcoming: RecurringPaymentWithItem[] = [];
+    const completed: RecurringPaymentWithItem[] = [];
+    for (const payment of monthPayments) {
+      if (payment.status === 'pending' || payment.status === 'overdue') {
+        upcoming.push(payment);
+      } else {
+        completed.push(payment);
+      }
+    }
+    upcoming.sort((a, b) => new Date(a.dueDate).getTime() - new Date(b.dueDate).getTime());
+    completed.sort((a, b) => new Date(b.dueDate).getTime() - new Date(a.dueDate).getTime());
+    return { upcomingPayments: upcoming, completedPayments: completed };
+  }, [monthPayments]);
 
   // Generate calendar weeks for a given month
   const generateMonthCalendar = (year: number, month: number): CalendarDay[][] => {
@@ -183,6 +276,7 @@ const BillCalendar: React.FC = () => {
       const hasIncome = projection?.items.some(i => i.type === 'income') ?? false;
       const hasExpense = projection?.items.some(i => i.type === 'expense') ?? false;
       const itemCount = projection?.items.length ?? 0;
+      const payments = paymentsByDate.get(dateStr) || [];
 
       currentWeek.push({
         date: new Date(currentDate),
@@ -194,6 +288,7 @@ const BillCalendar: React.FC = () => {
         hasIncome,
         hasExpense,
         itemCount,
+        payments,
       });
 
       if (currentWeek.length === 7) {
@@ -209,7 +304,7 @@ const BillCalendar: React.FC = () => {
 
   const calendarWeeks = useMemo(() => {
     return generateMonthCalendar(currentMonth.year, currentMonth.month);
-  }, [currentMonth, projectionMap, atRiskDates]);
+  }, [currentMonth, projectionMap, atRiskDates, paymentsByDate]);
 
   const navigateMonth = (direction: 'prev' | 'next') => {
     setCurrentMonth(prev => {
@@ -283,6 +378,41 @@ const BillCalendar: React.FC = () => {
     setSelectedDay(null);
   };
 
+  const getStatusBadgeClass = (status: string, amountDiffers?: boolean) => {
+    if (status === 'paid' && amountDiffers) return 'payment-badge payment-badge--amount-differs';
+    switch (status) {
+      case 'paid': return 'payment-badge payment-badge--paid';
+      case 'pending': return 'payment-badge payment-badge--pending';
+      case 'overdue': return 'payment-badge payment-badge--overdue';
+      case 'skipped': return 'payment-badge payment-badge--skipped';
+      default: return 'payment-badge';
+    }
+  };
+
+  const getStatusLabel = (status: string, amountDiffers?: boolean) => {
+    if (status === 'paid' && amountDiffers) return 'Differs';
+    switch (status) {
+      case 'paid': return 'Paid';
+      case 'pending': return 'Pending';
+      case 'overdue': return 'Overdue';
+      case 'skipped': return 'Skipped';
+      default: return status;
+    }
+  };
+
+  const getRiskBadge = () => {
+    if (!report) return null;
+    const { daysAtRisk, lowestProjectedBalance } = report.summary;
+    if (daysAtRisk > 0 || lowestProjectedBalance < 10000) {
+      return (
+        <span className="payment-badge payment-badge--overdue" style={{ marginLeft: '8px' }}>
+          {daysAtRisk} days at risk
+        </span>
+      );
+    }
+    return null;
+  };
+
   if (loading) {
     return (
       <div className="bill-calendar bill-calendar--loading">
@@ -333,65 +463,6 @@ const BillCalendar: React.FC = () => {
         </div>
       </div>
 
-      {/* Summary Cards */}
-      <div
-        style={{
-          display: 'grid',
-          gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))',
-          gap: '12px',
-          marginBottom: '24px',
-        }}
-      >
-        <div style={{ padding: '12px', backgroundColor: 'var(--color-surface)', borderRadius: 'var(--radius-md)' }}>
-          <div style={{ fontSize: '11px', color: 'var(--color-text-muted)' }}>Lowest Balance</div>
-          <div style={{ fontSize: '20px', fontWeight: 'bold', color: getBalanceColor(report.summary.lowestProjectedBalance) }}>
-            {formatCurrency(report.summary.lowestProjectedBalance)}
-          </div>
-          <div style={{ fontSize: '11px', color: 'var(--color-text-muted)' }}>
-            on {formatDate(report.summary.lowestBalanceDate)}
-          </div>
-        </div>
-        <div style={{ padding: '12px', backgroundColor: 'var(--color-surface)', borderRadius: 'var(--radius-md)' }}>
-          <div style={{ fontSize: '11px', color: 'var(--color-text-muted)' }}>Average Balance</div>
-          <div style={{ fontSize: '20px', fontWeight: 'bold' }}>
-            {formatCurrency(report.summary.averageBalance)}
-          </div>
-        </div>
-        <div style={{ padding: '12px', backgroundColor: report.summary.daysAtRisk > 0 ? 'rgba(239, 68, 68, 0.1)' : 'var(--color-surface)', borderRadius: 'var(--radius-md)', border: report.summary.daysAtRisk > 0 ? '1px solid var(--color-danger)' : 'none' }}>
-          <div style={{ fontSize: '11px', color: 'var(--color-text-muted)' }}>Days at Risk</div>
-          <div style={{ fontSize: '20px', fontWeight: 'bold', color: report.summary.daysAtRisk > 0 ? 'var(--color-danger)' : 'var(--color-success)' }}>
-            {report.summary.daysAtRisk}
-          </div>
-        </div>
-        <div style={{ padding: '12px', backgroundColor: 'var(--color-surface)', borderRadius: 'var(--radius-md)' }}>
-          <div style={{ fontSize: '11px', color: 'var(--color-text-muted)' }}>Bill Clustering</div>
-          <div style={{ fontSize: '20px', fontWeight: 'bold', color: report.summary.billClusteringScore > 50 ? 'var(--color-warning)' : 'var(--color-success)' }}>
-            {report.summary.billClusteringScore.toFixed(0)}%
-          </div>
-        </div>
-      </div>
-
-      {/* Insights */}
-      {report.insights.length > 0 && (
-        <div style={{ marginBottom: '24px' }}>
-          {report.insights.map((insight, i) => (
-            <div
-              key={i}
-              style={{
-                padding: '12px',
-                backgroundColor: 'var(--color-surface)',
-                borderRadius: 'var(--radius-md)',
-                borderLeft: `4px solid ${report.lowBalanceWindows.length > 0 ? 'var(--color-warning)' : 'var(--color-info)'}`,
-                fontSize: '14px',
-                marginBottom: '8px',
-              }}
-            >
-              {insight}
-            </div>
-          ))}
-        </div>
-      )}
-
       {/* Monthly Calendar */}
       <div className="calendar-container" style={{ backgroundColor: 'var(--color-surface)', borderRadius: 'var(--radius-md)', padding: '16px', marginBottom: '24px' }}>
         {/* Month Navigation Header */}
@@ -424,17 +495,29 @@ const BillCalendar: React.FC = () => {
           </button>
         </div>
 
-        {/* Legend */}
-        <div style={{ display: 'flex', gap: '16px', marginBottom: '12px', fontSize: '12px', color: 'var(--color-text-muted)' }}>
-          <span style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
-            <span className="calendar-dot calendar-dot--expense" style={{ width: '8px', height: '8px', borderRadius: '50%', backgroundColor: '#ef4444', display: 'inline-block' }}></span>
-            Expense
+        {/* Payment Legend */}
+        <div className="payment-legend">
+          <span className="payment-legend-item">
+            <span className="payment-legend-swatch payment-legend-swatch--paid"></span>
+            Paid
           </span>
-          <span style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
-            <span className="calendar-dot calendar-dot--income" style={{ width: '8px', height: '8px', borderRadius: '50%', backgroundColor: '#22c55e', display: 'inline-block' }}></span>
-            Income
+          <span className="payment-legend-item">
+            <span className="payment-legend-swatch payment-legend-swatch--pending"></span>
+            Pending
           </span>
-          <span style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+          <span className="payment-legend-item">
+            <span className="payment-legend-swatch payment-legend-swatch--overdue"></span>
+            Overdue
+          </span>
+          <span className="payment-legend-item">
+            <span className="payment-legend-swatch payment-legend-swatch--amount-differs"></span>
+            Amount Differs
+          </span>
+          <span className="payment-legend-item">
+            <span className="payment-legend-swatch payment-legend-swatch--skipped"></span>
+            Skipped
+          </span>
+          <span className="payment-legend-item">
             <span style={{ width: '16px', height: '12px', backgroundColor: 'rgba(239, 68, 68, 0.15)', border: '1px solid rgba(239, 68, 68, 0.3)', borderRadius: '2px', display: 'inline-block' }}></span>
             At-risk day
           </span>
@@ -451,62 +534,67 @@ const BillCalendar: React.FC = () => {
 
         {/* Calendar Grid */}
         <div className="calendar-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', gap: '4px' }}>
-          {calendarWeeks.flat().map((day, index) => (
-            <div
-              key={index}
-              className={`calendar-day ${day.isToday ? 'calendar-day--today' : ''} ${day.isAtRisk ? 'calendar-day--at-risk' : ''} ${!day.isCurrentMonth ? 'calendar-day--outside-month' : ''}`}
-              onClick={() => handleDayClick(day)}
-              style={{
-                minHeight: '64px',
-                padding: '6px',
-                backgroundColor: day.isAtRisk ? 'rgba(239, 68, 68, 0.1)' : 'var(--color-bg)',
-                border: day.isToday ? '2px solid var(--color-info)' : '1px solid var(--color-border)',
-                borderRadius: 'var(--radius-sm)',
-                cursor: 'pointer',
-                opacity: day.isCurrentMonth ? 1 : 0.4,
-                transition: 'all 0.15s ease',
-              }}
-              onMouseEnter={(e) => {
-                if (day.isCurrentMonth) {
-                  e.currentTarget.style.borderColor = 'var(--color-primary)';
-                  e.currentTarget.style.boxShadow = '0 2px 4px rgba(0,0,0,0.1)';
-                }
-              }}
-              onMouseLeave={(e) => {
-                e.currentTarget.style.borderColor = day.isToday ? 'var(--color-info)' : 'var(--color-border)';
-                e.currentTarget.style.boxShadow = 'none';
-              }}
-            >
-              {/* Day Number */}
-              <div style={{
-                fontSize: '13px',
-                fontWeight: day.isToday ? 'bold' : 'normal',
-                color: day.isToday ? 'var(--color-info)' : day.isCurrentMonth ? 'var(--color-text)' : 'var(--color-text-muted)',
-                marginBottom: '4px',
-              }}>
-                {day.dayOfMonth}
+          {calendarWeeks.flat().map((day, index) => {
+            const topStatus = getTopPaymentStatus(day.payments);
+            const statusClass = topStatus ? getStatusClassName(topStatus) : '';
+
+            return (
+              <div
+                key={index}
+                className={`calendar-day ${day.isToday ? 'calendar-day--today' : ''} ${day.isAtRisk ? 'calendar-day--at-risk' : ''} ${!day.isCurrentMonth ? 'calendar-day--outside-month' : ''} ${statusClass}`}
+                onClick={() => handleDayClick(day)}
+                style={{
+                  minHeight: '64px',
+                  padding: '6px',
+                  backgroundColor: day.isAtRisk ? 'rgba(239, 68, 68, 0.1)' : 'var(--color-bg)',
+                  border: day.isToday ? '2px solid var(--color-info)' : '1px solid var(--color-border)',
+                  borderRadius: 'var(--radius-sm)',
+                  cursor: 'pointer',
+                  opacity: day.isCurrentMonth ? 1 : 0.4,
+                  transition: 'all 0.15s ease',
+                }}
+                onMouseEnter={(e) => {
+                  if (day.isCurrentMonth) {
+                    e.currentTarget.style.borderColor = 'var(--color-primary)';
+                    e.currentTarget.style.boxShadow = '0 2px 4px rgba(0,0,0,0.1)';
+                  }
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.borderColor = day.isToday ? 'var(--color-info)' : 'var(--color-border)';
+                  e.currentTarget.style.boxShadow = 'none';
+                }}
+              >
+                {/* Day Number */}
+                <div style={{
+                  fontSize: '13px',
+                  fontWeight: day.isToday ? 'bold' : 'normal',
+                  color: day.isToday ? 'var(--color-info)' : day.isCurrentMonth ? 'var(--color-text)' : 'var(--color-text-muted)',
+                  marginBottom: '4px',
+                }}>
+                  {day.dayOfMonth}
+                </div>
+
+                {/* Indicator Dots */}
+                {(day.hasExpense || day.hasIncome || day.payments.length > 0) && (
+                  <div style={{ display: 'flex', gap: '3px', marginBottom: '2px', flexWrap: 'wrap' }}>
+                    {day.hasExpense && (
+                      <span style={{ width: '6px', height: '6px', borderRadius: '50%', backgroundColor: '#ef4444', display: 'inline-block' }}></span>
+                    )}
+                    {day.hasIncome && (
+                      <span style={{ width: '6px', height: '6px', borderRadius: '50%', backgroundColor: '#22c55e', display: 'inline-block' }}></span>
+                    )}
+                  </div>
+                )}
+
+                {/* Item count badge */}
+                {(day.itemCount > 0 || day.payments.length > 0) && (
+                  <div style={{ fontSize: '10px', color: 'var(--color-text-muted)' }}>
+                    {Math.max(day.itemCount, day.payments.length)} item{Math.max(day.itemCount, day.payments.length) !== 1 ? 's' : ''}
+                  </div>
+                )}
               </div>
-
-              {/* Indicator Dots */}
-              {(day.hasExpense || day.hasIncome) && (
-                <div style={{ display: 'flex', gap: '3px', marginBottom: '2px' }}>
-                  {day.hasExpense && (
-                    <span style={{ width: '6px', height: '6px', borderRadius: '50%', backgroundColor: '#ef4444', display: 'inline-block' }}></span>
-                  )}
-                  {day.hasIncome && (
-                    <span style={{ width: '6px', height: '6px', borderRadius: '50%', backgroundColor: '#22c55e', display: 'inline-block' }}></span>
-                  )}
-                </div>
-              )}
-
-              {/* Item count badge */}
-              {day.itemCount > 0 && (
-                <div style={{ fontSize: '10px', color: 'var(--color-text-muted)' }}>
-                  {day.itemCount} item{day.itemCount !== 1 ? 's' : ''}
-                </div>
-              )}
-            </div>
-          ))}
+            );
+          })}
         </div>
       </div>
 
@@ -544,6 +632,38 @@ const BillCalendar: React.FC = () => {
             <h4 style={{ margin: '0 0 16px 0', fontSize: '16px' }}>
               {formatFullDate(selectedDay.date)}
             </h4>
+
+            {/* Payment Info */}
+            {selectedDay.payments.length > 0 && (
+              <div style={{ marginBottom: '16px' }}>
+                <div style={{ fontSize: '12px', color: 'var(--color-text-muted)', marginBottom: '8px' }}>Payments</div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                  {selectedDay.payments.map((payment) => (
+                    <div
+                      key={payment.id}
+                      style={{
+                        display: 'flex',
+                        justifyContent: 'space-between',
+                        alignItems: 'center',
+                        padding: '8px 12px',
+                        backgroundColor: 'var(--color-bg)',
+                        borderRadius: 'var(--radius-sm)',
+                      }}
+                    >
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+                        <span style={{ fontSize: '14px' }}>{payment.name}</span>
+                        <span className={getStatusBadgeClass(payment.status, payment.amountDiffers)}>
+                          {getStatusLabel(payment.status, payment.amountDiffers)}
+                        </span>
+                      </div>
+                      <span style={{ fontSize: '14px', fontWeight: 500 }}>
+                        {formatCurrency(payment.amount)}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
 
             {/* Projected Balance */}
             {selectedDay.projection ? (
@@ -638,127 +758,289 @@ const BillCalendar: React.FC = () => {
         </div>
       )}
 
-      {/* Recommendations */}
-      {report.recommendations.length > 0 && (
-        <div style={{ marginTop: '24px' }}>
-          <h4 style={{ margin: '0 0 12px 0' }}>Due Date Recommendations</h4>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-            {report.recommendations.map((rec, i) => (
-              <div
-                key={i}
-                style={{
-                  padding: '12px 16px',
-                  backgroundColor: 'var(--color-surface)',
-                  borderRadius: 'var(--radius-md)',
-                  borderLeft: '4px solid var(--color-info)',
-                }}
-              >
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '4px' }}>
-                  <span style={{ fontWeight: '500' }}>{rec.recurringItemName}</span>
-                  <span style={{ fontSize: '12px', color: 'var(--color-text-muted)' }}>
-                    Day {rec.currentDayOfMonth} → Day {rec.recommendedDayOfMonth}
-                  </span>
+      {/* Upcoming & Completed Sections */}
+      {monthPayments.length > 0 && (
+        <div className="calendar-sections">
+          <div className="calendar-section-card card">
+            <h4 style={{ margin: '0 0 12px 0', fontSize: '15px' }}>Upcoming</h4>
+            {upcomingPayments.length > 0 ? (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                {upcomingPayments.map((payment) => (
+                  <div
+                    key={payment.id}
+                    style={{
+                      display: 'flex',
+                      justifyContent: 'space-between',
+                      alignItems: 'center',
+                      padding: '8px 12px',
+                      backgroundColor: 'var(--color-bg)',
+                      borderRadius: 'var(--radius-sm)',
+                    }}
+                  >
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+                      <span style={{ fontSize: '14px', fontWeight: 500 }}>{payment.description}</span>
+                      <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                        <span style={{ fontSize: '12px', color: 'var(--color-text-muted)' }}>
+                          {formatDate(payment.dueDate)}
+                        </span>
+                        <span className={getStatusBadgeClass(payment.status)}>
+                          {getStatusLabel(payment.status)}
+                        </span>
+                      </div>
+                    </div>
+                    <span style={{ fontSize: '14px', fontWeight: 600 }}>
+                      {formatCurrency(payment.amount)}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div style={{ fontSize: '13px', color: 'var(--color-text-muted)', padding: '12px', textAlign: 'center' }}>
+                No upcoming payments this month.
+              </div>
+            )}
+          </div>
+
+          <div className="calendar-section-card card">
+            <h4 style={{ margin: '0 0 12px 0', fontSize: '15px' }}>Completed</h4>
+            {completedPayments.length > 0 ? (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                {completedPayments.map((payment) => {
+                  const amountDiffers = payment.status === 'paid' && payment.amount !== payment.itemAmount;
+                  return (
+                    <div
+                      key={payment.id}
+                      style={{
+                        display: 'flex',
+                        justifyContent: 'space-between',
+                        alignItems: 'center',
+                        padding: '8px 12px',
+                        backgroundColor: 'var(--color-bg)',
+                        borderRadius: 'var(--radius-sm)',
+                      }}
+                    >
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+                        <span style={{ fontSize: '14px', fontWeight: 500 }}>{payment.description}</span>
+                        <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                          <span style={{ fontSize: '12px', color: 'var(--color-text-muted)' }}>
+                            {formatDate(payment.dueDate)}
+                          </span>
+                          <span className={getStatusBadgeClass(payment.status, amountDiffers)}>
+                            {getStatusLabel(payment.status, amountDiffers)}
+                          </span>
+                        </div>
+                      </div>
+                      <span style={{ fontSize: '14px', fontWeight: 600 }}>
+                        {formatCurrency(payment.amount)}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            ) : (
+              <div style={{ fontSize: '13px', color: 'var(--color-text-muted)', padding: '12px', textAlign: 'center' }}>
+                No completed payments this month.
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Collapsible Cash Flow Analysis */}
+      <div className="collapsible-section" style={{ marginTop: '24px' }}>
+        <button
+          className="collapsible-toggle"
+          onClick={() => setCashFlowExpanded(!cashFlowExpanded)}
+        >
+          <span className={`collapsible-arrow ${cashFlowExpanded ? 'collapsible-arrow--expanded' : ''}`}>&#9654;</span>
+          Cash Flow Analysis
+          {getRiskBadge()}
+        </button>
+        <div className={`collapsible-content ${cashFlowExpanded ? 'collapsible-content--expanded' : ''}`}>
+          <div className="collapsible-content-inner">
+            {/* Summary Cards */}
+            <div
+              style={{
+                display: 'grid',
+                gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))',
+                gap: '12px',
+                marginBottom: '24px',
+              }}
+            >
+              <div style={{ padding: '12px', backgroundColor: 'var(--color-surface)', borderRadius: 'var(--radius-md)' }}>
+                <div style={{ fontSize: '11px', color: 'var(--color-text-muted)' }}>Lowest Balance</div>
+                <div style={{ fontSize: '20px', fontWeight: 'bold', color: getBalanceColor(report.summary.lowestProjectedBalance) }}>
+                  {formatCurrency(report.summary.lowestProjectedBalance)}
                 </div>
-                <div style={{ fontSize: '13px', color: 'var(--color-text-muted)' }}>
-                  {rec.reason}
+                <div style={{ fontSize: '11px', color: 'var(--color-text-muted)' }}>
+                  on {formatDate(report.summary.lowestBalanceDate)}
                 </div>
               </div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* Transfer Recommendations */}
-      {report.transferRecommendations && report.transferRecommendations.length > 0 && (
-        <div style={{ marginTop: '24px' }}>
-          <h4 style={{ margin: '0 0 12px 0' }}>Suggested Transfers</h4>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-            {report.transferRecommendations.map((transfer, i) => {
-              const urgencyColors = {
-                high: 'var(--color-danger)',
-                medium: 'var(--color-warning)',
-                low: 'var(--color-info)',
-              };
-              const urgencyBg = {
-                high: 'rgba(239, 68, 68, 0.1)',
-                medium: 'rgba(245, 158, 11, 0.1)',
-                low: 'var(--color-surface)',
-              };
-              return (
-                <div
-                  key={i}
-                  style={{
-                    padding: '12px 16px',
-                    backgroundColor: urgencyBg[transfer.urgency],
-                    borderRadius: 'var(--radius-md)',
-                    borderLeft: `4px solid ${urgencyColors[transfer.urgency]}`,
-                  }}
-                >
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '4px' }}>
-                    <span style={{ fontWeight: '500' }}>
-                      Transfer {formatCurrency(transfer.amount)}
-                    </span>
-                    <span style={{
-                      fontSize: '11px',
-                      padding: '2px 8px',
-                      borderRadius: '10px',
-                      backgroundColor: urgencyColors[transfer.urgency],
-                      color: 'white',
-                      textTransform: 'uppercase',
-                    }}>
-                      {transfer.urgency}
-                    </span>
-                  </div>
-                  <div style={{ fontSize: '13px', marginBottom: '4px' }}>
-                    <span style={{ color: 'var(--color-text-muted)' }}>From:</span>{' '}
-                    <span style={{ fontWeight: '500' }}>{transfer.fromAccountName}</span>
-                    <span style={{ color: 'var(--color-text-muted)' }}> → To: </span>
-                    <span style={{ fontWeight: '500' }}>{transfer.toAccountName}</span>
-                  </div>
-                  <div style={{ fontSize: '12px', color: 'var(--color-text-muted)' }}>
-                    By {formatDate(transfer.date)} · {transfer.reason}
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      )}
-
-      {/* Bill Clusters */}
-      {report.billClusters.length > 0 && (
-        <div style={{ marginTop: '24px' }}>
-          <h4 style={{ margin: '0 0 12px 0' }}>Bill Distribution</h4>
-          <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
-            {report.billClusters.map((cluster, i) => (
-              <div
-                key={i}
-                style={{
-                  flex: '1 1 200px',
-                  padding: '12px',
-                  backgroundColor: 'var(--color-surface)',
-                  borderRadius: 'var(--radius-md)',
-                  borderLeft: `4px solid ${cluster.percentOfMonthlyBills > 40 ? 'var(--color-warning)' : 'var(--color-border)'}`,
-                }}
-              >
-                <div style={{ fontWeight: '500', marginBottom: '4px' }}>
-                  Days {cluster.dayRange[0]}-{cluster.dayRange[1]}
-                </div>
+              <div style={{ padding: '12px', backgroundColor: 'var(--color-surface)', borderRadius: 'var(--radius-md)' }}>
+                <div style={{ fontSize: '11px', color: 'var(--color-text-muted)' }}>Average Balance</div>
                 <div style={{ fontSize: '20px', fontWeight: 'bold' }}>
-                  {formatCurrency(cluster.totalAmount)}
-                </div>
-                <div style={{ fontSize: '12px', color: 'var(--color-text-muted)' }}>
-                  {cluster.percentOfMonthlyBills.toFixed(0)}% of monthly bills
-                </div>
-                <div style={{ marginTop: '8px', fontSize: '11px' }}>
-                  {cluster.bills.slice(0, 3).map(b => b.name).join(', ')}
-                  {cluster.bills.length > 3 && ` +${cluster.bills.length - 3} more`}
+                  {formatCurrency(report.summary.averageBalance)}
                 </div>
               </div>
-            ))}
+              <div style={{ padding: '12px', backgroundColor: report.summary.daysAtRisk > 0 ? 'rgba(239, 68, 68, 0.1)' : 'var(--color-surface)', borderRadius: 'var(--radius-md)', border: report.summary.daysAtRisk > 0 ? '1px solid var(--color-danger)' : 'none' }}>
+                <div style={{ fontSize: '11px', color: 'var(--color-text-muted)' }}>Days at Risk</div>
+                <div style={{ fontSize: '20px', fontWeight: 'bold', color: report.summary.daysAtRisk > 0 ? 'var(--color-danger)' : 'var(--color-success)' }}>
+                  {report.summary.daysAtRisk}
+                </div>
+              </div>
+              <div style={{ padding: '12px', backgroundColor: 'var(--color-surface)', borderRadius: 'var(--radius-md)' }}>
+                <div style={{ fontSize: '11px', color: 'var(--color-text-muted)' }}>Bill Clustering</div>
+                <div style={{ fontSize: '20px', fontWeight: 'bold', color: report.summary.billClusteringScore > 50 ? 'var(--color-warning)' : 'var(--color-success)' }}>
+                  {report.summary.billClusteringScore.toFixed(0)}%
+                </div>
+              </div>
+            </div>
+
+            {/* Insights */}
+            {report.insights.length > 0 && (
+              <div style={{ marginBottom: '24px' }}>
+                {report.insights.map((insight, i) => (
+                  <div
+                    key={i}
+                    style={{
+                      padding: '12px',
+                      backgroundColor: 'var(--color-surface)',
+                      borderRadius: 'var(--radius-md)',
+                      borderLeft: `4px solid ${report.lowBalanceWindows.length > 0 ? 'var(--color-warning)' : 'var(--color-info)'}`,
+                      fontSize: '14px',
+                      marginBottom: '8px',
+                    }}
+                  >
+                    {insight}
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* Recommendations */}
+            {report.recommendations.length > 0 && (
+              <div style={{ marginBottom: '24px' }}>
+                <h4 style={{ margin: '0 0 12px 0' }}>Due Date Recommendations</h4>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                  {report.recommendations.map((rec, i) => (
+                    <div
+                      key={i}
+                      style={{
+                        padding: '12px 16px',
+                        backgroundColor: 'var(--color-surface)',
+                        borderRadius: 'var(--radius-md)',
+                        borderLeft: '4px solid var(--color-info)',
+                      }}
+                    >
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '4px' }}>
+                        <span style={{ fontWeight: '500' }}>{rec.recurringItemName}</span>
+                        <span style={{ fontSize: '12px', color: 'var(--color-text-muted)' }}>
+                          Day {rec.currentDayOfMonth} → Day {rec.recommendedDayOfMonth}
+                        </span>
+                      </div>
+                      <div style={{ fontSize: '13px', color: 'var(--color-text-muted)' }}>
+                        {rec.reason}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Transfer Recommendations */}
+            {report.transferRecommendations && report.transferRecommendations.length > 0 && (
+              <div style={{ marginBottom: '24px' }}>
+                <h4 style={{ margin: '0 0 12px 0' }}>Suggested Transfers</h4>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                  {report.transferRecommendations.map((transfer, i) => {
+                    const urgencyColors = {
+                      high: 'var(--color-danger)',
+                      medium: 'var(--color-warning)',
+                      low: 'var(--color-info)',
+                    };
+                    const urgencyBg = {
+                      high: 'rgba(239, 68, 68, 0.1)',
+                      medium: 'rgba(245, 158, 11, 0.1)',
+                      low: 'var(--color-surface)',
+                    };
+                    return (
+                      <div
+                        key={i}
+                        style={{
+                          padding: '12px 16px',
+                          backgroundColor: urgencyBg[transfer.urgency],
+                          borderRadius: 'var(--radius-md)',
+                          borderLeft: `4px solid ${urgencyColors[transfer.urgency]}`,
+                        }}
+                      >
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '4px' }}>
+                          <span style={{ fontWeight: '500' }}>
+                            Transfer {formatCurrency(transfer.amount)}
+                          </span>
+                          <span style={{
+                            fontSize: '11px',
+                            padding: '2px 8px',
+                            borderRadius: '10px',
+                            backgroundColor: urgencyColors[transfer.urgency],
+                            color: 'white',
+                            textTransform: 'uppercase',
+                          }}>
+                            {transfer.urgency}
+                          </span>
+                        </div>
+                        <div style={{ fontSize: '13px', marginBottom: '4px' }}>
+                          <span style={{ color: 'var(--color-text-muted)' }}>From:</span>{' '}
+                          <span style={{ fontWeight: '500' }}>{transfer.fromAccountName}</span>
+                          <span style={{ color: 'var(--color-text-muted)' }}> → To: </span>
+                          <span style={{ fontWeight: '500' }}>{transfer.toAccountName}</span>
+                        </div>
+                        <div style={{ fontSize: '12px', color: 'var(--color-text-muted)' }}>
+                          By {formatDate(transfer.date)} · {transfer.reason}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+            {/* Bill Clusters */}
+            {report.billClusters.length > 0 && (
+              <div>
+                <h4 style={{ margin: '0 0 12px 0' }}>Bill Distribution</h4>
+                <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                  {report.billClusters.map((cluster, i) => (
+                    <div
+                      key={i}
+                      style={{
+                        flex: '1 1 200px',
+                        padding: '12px',
+                        backgroundColor: 'var(--color-surface)',
+                        borderRadius: 'var(--radius-md)',
+                        borderLeft: `4px solid ${cluster.percentOfMonthlyBills > 40 ? 'var(--color-warning)' : 'var(--color-border)'}`,
+                      }}
+                    >
+                      <div style={{ fontWeight: '500', marginBottom: '4px' }}>
+                        Days {cluster.dayRange[0]}-{cluster.dayRange[1]}
+                      </div>
+                      <div style={{ fontSize: '20px', fontWeight: 'bold' }}>
+                        {formatCurrency(cluster.totalAmount)}
+                      </div>
+                      <div style={{ fontSize: '12px', color: 'var(--color-text-muted)' }}>
+                        {cluster.percentOfMonthlyBills.toFixed(0)}% of monthly bills
+                      </div>
+                      <div style={{ marginTop: '8px', fontSize: '11px' }}>
+                        {cluster.bills.slice(0, 3).map(b => b.name).join(', ')}
+                        {cluster.bills.length > 3 && ` +${cluster.bills.length - 3} more`}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
         </div>
-      )}
+      </div>
     </div>
   );
 };

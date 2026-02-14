@@ -6,6 +6,7 @@ import {
   RecurringTransaction,
   RecurringItem,
   RecurringPayment,
+  RecurringPaymentWithItem,
   Tag,
 
   TransactionSplit,
@@ -46,7 +47,14 @@ import {
   DatabaseMetadata,
   TransactionReimbursement,
   ReimbursementSummary,
-  SecurityStatus,
+  UserAuthStatus,
+  SavedReport,
+  User,
+  TransactionAttachment,
+  EncryptableEntityType,
+  SharePermissions,
+  DataShare,
+  SharingDefault,
 } from './types';
 
 import type {
@@ -199,6 +207,15 @@ export interface EnhancedCashFlowForecast {
 
 export interface API {
   version: string;
+
+  users: {
+    getAll: () => Promise<User[]>;
+    getById: (id: string) => Promise<User | null>;
+    getDefault: () => Promise<User>;
+    create: (name: string, color: string) => Promise<User>;
+    update: (id: string, updates: Partial<{ name: string; color: string; isDefault: boolean }>) => Promise<User | null>;
+    delete: (id: string) => Promise<boolean>;
+  };
 
   accounts: {
     getAll: () => Promise<Account[]>;
@@ -354,6 +371,7 @@ export interface API {
     getAll: (recurringItemId: string) => Promise<RecurringPayment[]>;
     getById: (id: string) => Promise<RecurringPayment | null>;
     getUpcoming: (days?: number) => Promise<RecurringPayment[]>;
+    getByDateRange: (startDate: string, endDate: string) => Promise<RecurringPaymentWithItem[]>;
     create: (payment: Omit<RecurringPayment, 'id' | 'createdAt'>) => Promise<RecurringPayment>;
     update: (id: string, updates: Partial<Omit<RecurringPayment, 'id' | 'createdAt' | 'recurringItemId'>>) => Promise<RecurringPayment | null>;
     delete: (id: string) => Promise<boolean>;
@@ -1710,19 +1728,40 @@ export interface API {
     getCandidates: (expenseId: string) => Promise<Transaction[]>;
   };
 
+  // ==================== Saved Reports ====================
+  savedReports: {
+    getAll: () => Promise<SavedReport[]>;
+    getById: (id: string) => Promise<SavedReport | null>;
+    create: (name: string, config: string) => Promise<SavedReport>;
+    update: (id: string, updates: Partial<{ name: string; config: string; lastAccessedAt: number }>) => Promise<SavedReport | null>;
+    delete: (id: string) => Promise<boolean>;
+    getRecent: (limit?: number) => Promise<SavedReport[]>;
+  };
+
   // ==================== Security ====================
   security: {
-    getStatus: () => Promise<SecurityStatus>;
-    enable: (password: string, autoLockMinutes: number) => Promise<void>;
-    disable: (password: string) => Promise<void>;
-    changePassword: (currentPassword: string, newPassword: string) => Promise<void>;
-    updateAutoLock: (minutes: number) => Promise<void>;
     lock: () => Promise<void>;
-    unlock: (password: string) => Promise<boolean>;
-    unlockStartup: (password: string) => Promise<boolean>;
+    getAutoLock: () => Promise<number>;
+    setAutoLock: (minutes: number) => Promise<void>;
     heartbeat: () => Promise<void>;
+    getMemberAuthStatus: () => Promise<UserAuthStatus[]>;
+    enableMemberPassword: (userId: string, password: string) => Promise<void>;
+    disableMemberPassword: (userId: string, currentPassword: string) => Promise<void>;
+    changeMemberPassword: (userId: string, oldPassword: string, newPassword: string) => Promise<void>;
+    unlockMember: (userId: string, password: string | null) => Promise<boolean>;
+    unlockMemberStartup: (userId: string, password: string | null) => Promise<boolean>;
     onLock: (callback: () => void) => () => void;
     onUnlock: (callback: () => void) => () => void;
+  };
+
+  // ==================== Budget Settings (Flex Mode) ====================
+  budgetSettings: {
+    getMode: () => Promise<string>;
+    setMode: (mode: string) => Promise<void>;
+    getFlexTarget: () => Promise<number>;
+    setFlexTarget: (amountCents: number) => Promise<void>;
+    getFixedCategoryIds: () => Promise<string[]>;
+    setFixedCategoryIds: (ids: string[]) => Promise<void>;
   };
 
   // ==================== Budget Income Override ====================
@@ -1745,6 +1784,32 @@ export interface API {
     setComplete: (value: string) => Promise<void>;
   };
 
+  // ==================== Tutorials ====================
+  tutorials: {
+    isCompleted: (toolId: string) => Promise<string>;
+    markCompleted: (toolId: string) => Promise<void>;
+    resetAll: () => Promise<void>;
+  };
+
+  // ==================== Dashboard Layout ====================
+  dashboardLayout: {
+    get: () => Promise<string>;
+    set: (layout: string) => Promise<void>;
+    getWidgets: () => Promise<string>;
+    setWidgets: (widgets: string) => Promise<void>;
+  };
+
+  // ==================== Phase 8: Transaction Attachments ====================
+  attachments: {
+    getByTransaction: (transactionId: string) => Promise<TransactionAttachment[]>;
+    getById: (id: string) => Promise<TransactionAttachment | null>;
+    add: (transactionId: string, sourceFilePath: string) => Promise<TransactionAttachment>;
+    delete: (id: string) => Promise<boolean>;
+    open: (id: string) => Promise<void>;
+    getCountsByTransactionIds: (transactionIds: string[]) => Promise<Record<string, number>>;
+    selectFile: () => Promise<{ canceled: boolean; filePaths?: string[] }>;
+  };
+
   // ==================== Phase 10: Database Export/Import ====================
   database: {
     export: () => Promise<{ success: boolean; filePath?: string; error?: string }>;
@@ -1753,6 +1818,18 @@ export interface API {
     importConfirm: (importPath: string) => Promise<{ success: boolean; backupPath?: string; error?: string }>;
     onMenuExport: (callback: () => void) => () => void;
     onMenuImport: (callback: () => void) => () => void;
+  };
+
+  // ==================== Sharing ====================
+  sharing: {
+    createShare: (entityId: string, entityType: EncryptableEntityType, recipientId: string, permissions: SharePermissions) => Promise<DataShare>;
+    revokeShare: (shareId: string) => Promise<boolean>;
+    updatePermissions: (shareId: string, permissions: SharePermissions) => Promise<boolean>;
+    getSharesForEntity: (entityId: string, entityType: EncryptableEntityType) => Promise<DataShare[]>;
+    getSharedWithMe: () => Promise<DataShare[]>;
+    getDefaults: (ownerId: string, entityType?: EncryptableEntityType) => Promise<SharingDefault[]>;
+    setDefault: (ownerId: string, recipientId: string, entityType: EncryptableEntityType, permissions: SharePermissions) => Promise<SharingDefault>;
+    removeDefault: (defaultId: string) => Promise<boolean>;
   };
 }
 

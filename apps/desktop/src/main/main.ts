@@ -1,18 +1,19 @@
 import { app, BrowserWindow, ipcMain, session, Menu } from 'electron';
 import path from 'path';
 import fs from 'fs';
+import crypto from 'crypto';
 import BetterSqlite3 = require('better-sqlite3');
 import { BudgetDatabase } from './database';
 import { IPCHandlers } from './ipc-handlers';
-import { SecurityManager } from './security';
 import { CategorizationEngine } from './categorization-engine';
 import { initAutoUpdater } from './auto-updater';
 import { createSplashScreen, updateSplashStatus, closeSplashScreen } from './splash-screen';
+import { sessionKeys } from './session-keys';
+import { deriveUEK, decryptPrivateKey } from './crypto-engine';
 
 const windows: Map<number, BrowserWindow> = new Map();
 let database: BudgetDatabase | null = null;
 let ipcHandlers: IPCHandlers | null = null;
-let securityManager: SecurityManager | null = null;
 let autoLockTimer: ReturnType<typeof setTimeout> | null = null;
 
 const isDev = process.argv.includes('--dev');
@@ -194,7 +195,7 @@ if (!gotTheLock) {
       autoLockTimer = null;
     }
 
-    const dbPath = database ? path.join(app.getPath('userData'), 'ledgr.db') : null;
+    sessionKeys.clearAll();
 
     if (database) {
       try {
@@ -204,17 +205,6 @@ if (!gotTheLock) {
         console.error('[Shutdown] Error closing database:', error);
       }
       database = null;
-    }
-
-    // Encrypt database on close if protection is enabled
-    if (securityManager?.isEnabled() && dbPath) {
-      try {
-        securityManager.encryptDatabaseWithSessionKey(dbPath);
-        securityManager.clearSessionKey();
-        console.log('[Shutdown] Database encrypted');
-      } catch (error) {
-        console.error('[Shutdown] Error encrypting database:', error);
-      }
     }
   });
 
@@ -236,22 +226,20 @@ if (!gotTheLock) {
     });
   });
 
-  // Initialize security manager
-  updateSplashStatus('Checking security...');
   const dbPath = path.join(app.getPath('userData'), 'ledgr.db');
-  securityManager = new SecurityManager(app.getPath('userData'));
 
   function resetAutoLockTimer(): void {
     if (autoLockTimer) {
       clearTimeout(autoLockTimer);
       autoLockTimer = null;
     }
-    if (!securityManager?.isEnabled()) return;
-    const minutes = securityManager.getAutoLockMinutes();
+    if (!database || !ipcHandlers) return;
+    const minutes = parseInt(database.getSetting('auto_lock_minutes', '0'), 10);
     if (minutes <= 0) return;
     autoLockTimer = setTimeout(() => {
-      if (securityManager && securityManager.isEnabled() && !securityManager.getIsLocked()) {
-        securityManager.setIsLocked(true);
+      if (ipcHandlers && !ipcHandlers.getIsLocked()) {
+        ipcHandlers.setLocked(true);
+        sessionKeys.clearAll();
         for (const win of BrowserWindow.getAllWindows()) {
           win.webContents.send('app:lock');
         }
@@ -278,7 +266,7 @@ if (!gotTheLock) {
 
     // Initialize IPC handlers
     updateSplashStatus('Setting up handlers...');
-    ipcHandlers = new IPCHandlers(database, securityManager!);
+    ipcHandlers = new IPCHandlers(database);
 
     // Register security heartbeat handler for auto-lock
     ipcMain.removeHandler('security:heartbeat');
@@ -295,43 +283,65 @@ if (!gotTheLock) {
     return newWindow.id;
   });
 
-  if (securityManager.isEnabled()) {
-    // Encrypted startup flow
-    securityManager.handleCrashRecovery(dbPath);
+  // Initialize app (no more encrypted-at-rest database)
+  initializeApp(dbPath);
+  resetAutoLockTimer();
+
+  // Check if any household member has a password set
+  const users = database!.getUsers();
+  const anyMemberHasPassword = users.some(u =>
+    database!.getSetting(`user_password_hash_${u.id}`, '') !== ''
+  );
+
+  if (anyMemberHasPassword) {
+    // Member-password startup gate: show lock screen for member selection
     closeSplashScreen();
 
-    // Register one-time startup unlock handler
-    ipcMain.handle('security:unlockStartup', (event, password: string) => {
+    // Register one-time member startup unlock handler
+    ipcMain.handle('security:unlockMemberStartup', (event, userId: string, password: string | null) => {
       validateSender(event);
-      if (!securityManager!.verifyPassword(password)) {
-        return false;
-      }
 
-      try {
-        securityManager!.decryptDatabase(dbPath, password);
-        securityManager!.setSessionKey(password);
-        securityManager!.setIsLocked(false);
+      const storedHash = database!.getSetting(`user_password_hash_${userId}`, '');
+      const storedSalt = database!.getSetting(`user_password_salt_${userId}`, '');
 
-        initializeApp(dbPath);
-        resetAutoLockTimer();
-        return true;
-      } catch (error) {
-        console.error('[Security] Decryption failed:', error);
-        return false;
+      if (storedHash && storedSalt) {
+        // User has a password — verify it
+        if (!password) return false;
+        const salt = Buffer.from(storedSalt, 'hex');
+        const hash = crypto.pbkdf2Sync(password, salt, 600000, 32, 'sha512');
+        if (!crypto.timingSafeEqual(hash, Buffer.from(storedHash, 'hex'))) {
+          return false;
+        }
+
+        // Derive UEK and load session keys
+        const userKeys = database!.getUserKeys(userId);
+        if (userKeys && password) {
+          const encSalt = Buffer.from(userKeys.encryptionSalt, 'hex');
+          const uek = deriveUEK(password, encSalt);
+          const privateKey = decryptPrivateKey(
+            userKeys.encryptedPrivateKey, userKeys.privateKeyIv, userKeys.privateKeyTag, uek
+          );
+          sessionKeys.setSession(userId, uek, privateKey);
+        }
       }
+      // User has no password, or password verified — unlock
+
+      // Create the main window
+      createWindow();
+
+      // Remove the one-time handler
+      ipcMain.removeHandler('security:unlockMemberStartup');
+
+      return true;
     });
 
-    // Show lock window
+    // Show lock window for member selection
     const lockWindow = createWindow('lock');
     lockWindow.webContents.once('did-finish-load', () => {
       // Lock window is now showing
     });
   } else {
-    // Normal startup (no encryption)
-    initializeApp(dbPath);
-    resetAutoLockTimer();
-
-    // Create main window (but don't show until ready)
+    // No member passwords — proceed normally
     updateSplashStatus('Loading interface...');
     const mainWindow = createWindow();
 
@@ -372,10 +382,10 @@ if (!gotTheLock) {
         {
           label: 'Lock',
           accelerator: 'CmdOrCtrl+L',
-          visible: securityManager?.isEnabled() ?? false,
           click: () => {
-            if (securityManager?.isEnabled()) {
-              securityManager.setIsLocked(true);
+            if (ipcHandlers) {
+              ipcHandlers.setLocked(true);
+              sessionKeys.clearAll();
               for (const win of BrowserWindow.getAllWindows()) {
                 win.webContents.send('app:lock');
               }
@@ -508,7 +518,7 @@ if (!gotTheLock) {
       autoLockTimer = null;
     }
 
-    const closingDbPath = database ? path.join(app.getPath('userData'), 'ledgr.db') : null;
+    sessionKeys.clearAll();
 
     // Clean up database and IPC handlers
     if (database) {
@@ -518,17 +528,6 @@ if (!gotTheLock) {
     if (ipcHandlers) {
       ipcHandlers.removeHandlers();
       ipcHandlers = null;
-    }
-
-    // Encrypt database on close if protection is enabled
-    if (securityManager?.isEnabled() && closingDbPath) {
-      try {
-        securityManager.encryptDatabaseWithSessionKey(closingDbPath);
-        securityManager.clearSessionKey();
-        console.log('[Shutdown] Database encrypted');
-      } catch (error) {
-        console.error('[Shutdown] Error encrypting database:', error);
-      }
     }
 
     if (process.platform !== 'darwin') {

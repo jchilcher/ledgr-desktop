@@ -1,5 +1,7 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
+import ChartExportButton from './ChartExportButton';
+import { useHousehold } from '../contexts/HouseholdContext';
 
 interface IncomeVsExpensesData {
   period: string;
@@ -13,6 +15,8 @@ type Grouping = 'day' | 'week' | 'month' | 'year';
 type DatePreset = 'this-month' | 'last-3-months' | 'this-year' | 'custom';
 
 const IncomeVsExpenses: React.FC = () => {
+  const { householdFilter } = useHousehold();
+  const chartRef = useRef<HTMLDivElement>(null);
   const [chartType, setChartType] = useState<ChartType>('bar');
   const [grouping, setGrouping] = useState<Grouping>('month');
   const [data, setData] = useState<IncomeVsExpensesData[]>([]);
@@ -83,7 +87,7 @@ const IncomeVsExpenses: React.FC = () => {
   useEffect(() => {
     loadData();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [datePreset, grouping, startDate, endDate]);
+  }, [datePreset, grouping, startDate, endDate, householdFilter]);
 
   // Calculate totals
   const totals = data.reduce(
@@ -254,6 +258,10 @@ const IncomeVsExpenses: React.FC = () => {
         </div>
       ) : (
         <div style={{ marginTop: '20px' }}>
+          <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: '8px' }}>
+            <ChartExportButton chartRef={chartRef} filename="income-vs-expenses" />
+          </div>
+          <div ref={chartRef}>
           <ResponsiveContainer width="100%" height={400}>
             {chartType === 'bar' ? (
               <BarChart data={data}>
@@ -278,6 +286,7 @@ const IncomeVsExpenses: React.FC = () => {
               </LineChart>
             )}
           </ResponsiveContainer>
+          </div>
         </div>
       )}
 

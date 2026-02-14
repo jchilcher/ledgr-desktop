@@ -1,5 +1,5 @@
-import { useState, useEffect } from 'react';
-import { Category, Account, BudgetGoal, BudgetVsActualReport, BudgetVsActualRow, BudgetVsActualTotals } from '../../shared/types';
+import { useState, useEffect, useCallback } from 'react';
+import { Category, Account, BudgetGoal, BudgetVsActualReport, BudgetVsActualRow, BudgetVsActualTotals, SavedReport } from '../../shared/types';
 
 type ReportType = 'spending_summary' | 'income_report' | 'category_analysis' | 'net_worth' | 'budget_vs_actual' | 'custom';
 
@@ -19,6 +19,14 @@ export function CustomReports() {
   const [previewData, setPreviewData] = useState<unknown>(null);
   const [isGenerating, setIsGenerating] = useState(false);
 
+  const [savedReports, setSavedReports] = useState<SavedReport[]>([]);
+  const [recentReports, setRecentReports] = useState<SavedReport[]>([]);
+  const [showSaveModal, setShowSaveModal] = useState(false);
+  const [saveReportName, setSaveReportName] = useState('');
+  const [editingReportId, setEditingReportId] = useState<string | null>(null);
+  const [editingReportName, setEditingReportName] = useState('');
+  const [loadedReportId, setLoadedReportId] = useState<string | null>(null);
+
   const [config, setConfig] = useState<ReportConfig>({
     type: 'spending_summary',
     startDate: new Date(new Date().setMonth(new Date().getMonth() - 1)).toISOString().split('T')[0],
@@ -28,22 +36,35 @@ export function CustomReports() {
     includeCharts: true,
   });
 
-  useEffect(() => {
-    loadData();
+  const loadSavedReports = useCallback(async () => {
+    try {
+      const [saved, recent] = await Promise.all([
+        window.api.savedReports.getAll(),
+        window.api.savedReports.getRecent(5),
+      ]);
+      setSavedReports(saved);
+      setRecentReports(recent);
+    } catch (error) {
+      console.error('Failed to load saved reports:', error);
+    }
   }, []);
 
-  const loadData = async () => {
-    try {
-      const [cats, accts] = await Promise.all([
-        window.api.categories.getAll(),
-        window.api.accounts.getAll(),
-      ]);
-      setCategories(cats);
-      setAccounts(accts);
-    } catch (error) {
-      console.error('Failed to load data:', error);
-    }
-  };
+  useEffect(() => {
+    const loadData = async () => {
+      try {
+        const [cats, accts] = await Promise.all([
+          window.api.categories.getAll(),
+          window.api.accounts.getAll(),
+        ]);
+        setCategories(cats);
+        setAccounts(accts);
+      } catch (error) {
+        console.error('Failed to load data:', error);
+      }
+    };
+    loadData();
+    loadSavedReports();
+  }, [loadSavedReports]);
 
   const handleCategoryToggle = (categoryId: string) => {
     setConfig(prev => ({
@@ -208,6 +229,76 @@ export function CustomReports() {
   const handleExportPDF = async () => {
     // PDF export would use pdfmake library
     alert('PDF export requires pdfmake dependency. Add it with: npm install pdfmake');
+  };
+
+  const handleSaveReport = async () => {
+    if (!saveReportName.trim()) return;
+    try {
+      const configJson = JSON.stringify(config);
+      await window.api.savedReports.create(saveReportName.trim(), configJson);
+      setSaveReportName('');
+      setShowSaveModal(false);
+      await loadSavedReports();
+    } catch (error) {
+      console.error('Failed to save report:', error);
+    }
+  };
+
+  const handleLoadReport = async (report: SavedReport) => {
+    try {
+      const parsedConfig = JSON.parse(report.config) as ReportConfig;
+      setConfig(parsedConfig);
+      setShowBuilder(true);
+      setPreviewData(null);
+      setLoadedReportId(report.id);
+      await window.api.savedReports.update(report.id, { lastAccessedAt: Date.now() });
+      await loadSavedReports();
+    } catch (error) {
+      console.error('Failed to load report:', error);
+    }
+  };
+
+  const handleDeleteReport = async (id: string) => {
+    try {
+      await window.api.savedReports.delete(id);
+      if (loadedReportId === id) {
+        setLoadedReportId(null);
+      }
+      await loadSavedReports();
+    } catch (error) {
+      console.error('Failed to delete report:', error);
+    }
+  };
+
+  const handleRenameReport = async (id: string) => {
+    if (!editingReportName.trim()) return;
+    try {
+      await window.api.savedReports.update(id, { name: editingReportName.trim() });
+      setEditingReportId(null);
+      setEditingReportName('');
+      await loadSavedReports();
+    } catch (error) {
+      console.error('Failed to rename report:', error);
+    }
+  };
+
+  const handleUpdateSavedReport = async () => {
+    if (!loadedReportId) return;
+    try {
+      const configJson = JSON.stringify(config);
+      await window.api.savedReports.update(loadedReportId, { config: configJson, lastAccessedAt: Date.now() });
+      await loadSavedReports();
+    } catch (error) {
+      console.error('Failed to update report:', error);
+    }
+  };
+
+  const formatDate = (date: Date) => {
+    return new Date(date).toLocaleDateString('en-US', {
+      month: 'short',
+      day: 'numeric',
+      year: 'numeric',
+    });
   };
 
   const reportTypes: { value: ReportType; label: string; description: string }[] = [
@@ -519,13 +610,44 @@ export function CustomReports() {
             <button onClick={handlePreview} disabled={isGenerating}>
               {isGenerating ? 'Generating...' : 'Preview'}
             </button>
+            <button onClick={() => setShowSaveModal(true)}>
+              Save Report
+            </button>
+            {loadedReportId && (
+              <button onClick={handleUpdateSavedReport}>
+                Update Saved
+              </button>
+            )}
             <button onClick={handleExportPDF} disabled={!previewData}>
               Export PDF
             </button>
-            <button type="button" onClick={() => { setShowBuilder(false); setPreviewData(null); }}>
+            <button type="button" onClick={() => { setShowBuilder(false); setPreviewData(null); setLoadedReportId(null); }}>
               Cancel
             </button>
           </div>
+
+          {showSaveModal && (
+            <div className="save-report-modal" style={{ marginTop: '16px', padding: '16px', backgroundColor: '#f9fafb', borderRadius: '8px', border: '1px solid #e5e7eb' }}>
+              <label style={{ display: 'block', marginBottom: '8px', fontWeight: 500 }}>Report Name</label>
+              <div style={{ display: 'flex', gap: '8px' }}>
+                <input
+                  type="text"
+                  value={saveReportName}
+                  onChange={e => setSaveReportName(e.target.value)}
+                  placeholder="Enter report name..."
+                  style={{ flex: 1 }}
+                  onKeyDown={e => { if (e.key === 'Enter') handleSaveReport(); }}
+                  autoFocus
+                />
+                <button onClick={handleSaveReport} disabled={!saveReportName.trim()}>
+                  Save
+                </button>
+                <button type="button" onClick={() => { setShowSaveModal(false); setSaveReportName(''); }}>
+                  Cancel
+                </button>
+              </div>
+            </div>
+          )}
 
           {previewData !== null && (
             <div className="report-preview">
@@ -545,12 +667,114 @@ export function CustomReports() {
 
       <div className="saved-reports">
         <h3>Saved Reports</h3>
-        <p className="empty-state">No saved reports yet. Create a report to get started.</p>
+        {savedReports.length === 0 ? (
+          <p className="empty-state">No saved reports yet. Create a report and save it to get started.</p>
+        ) : (
+          <div className="saved-reports-list" style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+            {savedReports.map(report => (
+              <div
+                key={report.id}
+                className="saved-report-item"
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '12px',
+                  padding: '12px 16px',
+                  backgroundColor: loadedReportId === report.id ? '#eff6ff' : '#f9fafb',
+                  borderRadius: '8px',
+                  border: loadedReportId === report.id ? '1px solid #93c5fd' : '1px solid #e5e7eb',
+                }}
+              >
+                {editingReportId === report.id ? (
+                  <div style={{ flex: 1, display: 'flex', gap: '8px' }}>
+                    <input
+                      type="text"
+                      value={editingReportName}
+                      onChange={e => setEditingReportName(e.target.value)}
+                      onKeyDown={e => {
+                        if (e.key === 'Enter') handleRenameReport(report.id);
+                        if (e.key === 'Escape') { setEditingReportId(null); setEditingReportName(''); }
+                      }}
+                      style={{ flex: 1 }}
+                      autoFocus
+                    />
+                    <button onClick={() => handleRenameReport(report.id)} disabled={!editingReportName.trim()}>
+                      Save
+                    </button>
+                    <button type="button" onClick={() => { setEditingReportId(null); setEditingReportName(''); }}>
+                      Cancel
+                    </button>
+                  </div>
+                ) : (
+                  <>
+                    <div style={{ flex: 1, cursor: 'pointer' }} onClick={() => handleLoadReport(report)}>
+                      <div style={{ fontWeight: 500 }}>{report.name}</div>
+                      <div style={{ fontSize: '12px', color: '#6b7280', marginTop: '2px' }}>
+                        Created {formatDate(report.createdAt)}
+                        {report.lastAccessedAt && report.lastAccessedAt > report.createdAt && (
+                          <> &middot; Last used {formatDate(report.lastAccessedAt)}</>
+                        )}
+                      </div>
+                    </div>
+                    <button
+                      onClick={() => handleLoadReport(report)}
+                      style={{ padding: '4px 12px', fontSize: '13px' }}
+                    >
+                      Load
+                    </button>
+                    <button
+                      onClick={() => { setEditingReportId(report.id); setEditingReportName(report.name); }}
+                      style={{ padding: '4px 12px', fontSize: '13px' }}
+                    >
+                      Rename
+                    </button>
+                    <button
+                      onClick={() => handleDeleteReport(report.id)}
+                      className="delete-btn"
+                      style={{ padding: '4px 12px', fontSize: '13px' }}
+                    >
+                      Delete
+                    </button>
+                  </>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
       </div>
 
       <div className="recent-reports">
         <h3>Recent Reports</h3>
-        <p className="empty-state">Your recently generated reports will appear here.</p>
+        {recentReports.length === 0 ? (
+          <p className="empty-state">Your recently accessed saved reports will appear here.</p>
+        ) : (
+          <div className="recent-reports-list" style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+            {recentReports.map(report => (
+              <div
+                key={report.id}
+                className="recent-report-item"
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '12px',
+                  padding: '10px 16px',
+                  backgroundColor: '#f9fafb',
+                  borderRadius: '8px',
+                  border: '1px solid #e5e7eb',
+                  cursor: 'pointer',
+                }}
+                onClick={() => handleLoadReport(report)}
+              >
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontWeight: 500 }}>{report.name}</div>
+                  <div style={{ fontSize: '12px', color: '#6b7280', marginTop: '2px' }}>
+                    Last used {formatDate(report.lastAccessedAt)}
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   );

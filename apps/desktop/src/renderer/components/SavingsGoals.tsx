@@ -1,8 +1,11 @@
 import React, { useState, useEffect } from 'react';
-import { SavingsGoal, SavingsContribution, Account, SavingsGrowthPoint, SavingsMonthlyContribution } from '../../shared/types';
+import { SavingsGoal, SavingsContribution, Account, SavingsGrowthPoint, SavingsMonthlyContribution, UserAuthStatus, EncryptableEntityType } from '../../shared/types';
 import { useInlineEdit } from '../hooks/useInlineEdit';
 import { EditableText, EditableNumber, EditableDate, EditableSelect } from './inline-edit';
 import EmptyState from './EmptyState';
+import OwnershipSelector from './OwnershipSelector';
+import ShareDialog from './ShareDialog';
+import { useHousehold } from '../contexts/HouseholdContext';
 
 const DEFAULT_COLORS = [
   '#EF4444', '#F97316', '#F59E0B', '#84CC16', '#22C55E',
@@ -19,9 +22,11 @@ interface EditFormData {
   accountId: string;
   icon: string;
   color: string;
+  ownerId: string;
 }
 
 export default function SavingsGoals() {
+  const { currentUserId, householdFilter, filterByOwnership } = useHousehold();
   const [goals, setGoals] = useState<SavingsGoal[]>([]);
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [loading, setLoading] = useState(false);
@@ -40,6 +45,7 @@ export default function SavingsGoals() {
   const [formAccountId, setFormAccountId] = useState('');
   const [formIcon, setFormIcon] = useState(ICONS[0]);
   const [formColor, setFormColor] = useState(DEFAULT_COLORS[0]);
+  const [formOwnerId, setFormOwnerId] = useState<string | null>(currentUserId);
 
   // Contribution form
   const [contributionAmount, setContributionAmount] = useState('');
@@ -60,6 +66,8 @@ export default function SavingsGoals() {
   } | null>(null);
 
   const [error, setError] = useState('');
+  const [shareTarget, setShareTarget] = useState<{ id: string; name: string } | null>(null);
+  const [memberAuthStatus, setMemberAuthStatus] = useState<UserAuthStatus[]>([]);
 
   // Inline edit hook
   const inlineEdit = useInlineEdit<EditFormData>({
@@ -90,6 +98,7 @@ export default function SavingsGoals() {
         targetDate: data.targetDate ? new Date(data.targetDate) : null,
         icon: data.icon,
         color: data.color,
+        ownerId: data.ownerId || null,
       });
       await loadData();
     },
@@ -109,7 +118,7 @@ export default function SavingsGoals() {
 
   useEffect(() => {
     loadData();
-  }, []);
+  }, [householdFilter]);
 
   useEffect(() => {
     if (selectedGoal) {
@@ -121,16 +130,19 @@ export default function SavingsGoals() {
   const loadData = async () => {
     try {
       setLoading(true);
-      const [allGoals, allAccounts] = await Promise.all([
+      const [allGoals, allAccounts, authStatuses] = await Promise.all([
         window.api.savingsGoals.getAll(),
         window.api.accounts.getAll(),
+        window.api.security.getMemberAuthStatus().catch(() => [] as UserAuthStatus[]),
       ]);
-      setGoals(allGoals);
+      const visibleGoals = filterByOwnership(allGoals);
+      setGoals(visibleGoals);
       setAccounts(allAccounts);
+      setMemberAuthStatus(authStatuses);
 
       // Refresh selectedGoal if it exists
       if (selectedGoal) {
-        const updated = allGoals.find(g => g.id === selectedGoal.id);
+        const updated = visibleGoals.find(g => g.id === selectedGoal.id);
         if (updated) setSelectedGoal(updated);
       }
     } catch (err) {
@@ -195,6 +207,7 @@ export default function SavingsGoals() {
         icon: formIcon,
         color: formColor,
         isActive: true,
+        ownerId: formOwnerId || null,
       });
 
       // Pin account if selected
@@ -225,6 +238,7 @@ export default function SavingsGoals() {
       accountId: goal.accountId || '',
       icon: goal.icon || ICONS[0],
       color: goal.color || DEFAULT_COLORS[0],
+      ownerId: goal.ownerId || '',
     });
   };
 
@@ -294,6 +308,7 @@ export default function SavingsGoals() {
     setFormAccountId('');
     setFormIcon(ICONS[0]);
     setFormColor(DEFAULT_COLORS[0]);
+    setFormOwnerId(currentUserId);
     setError('');
   };
 
@@ -354,6 +369,15 @@ export default function SavingsGoals() {
         ))}
       </div>
     );
+  };
+
+  const canShareGoal = (goal: SavingsGoal): boolean => {
+    if (!currentUserId) return false;
+    if (goal.ownerId && goal.ownerId !== currentUserId) return false;
+    const currentUserAuth = memberAuthStatus.find(m => m.userId === currentUserId);
+    if (!currentUserAuth?.hasPassword) return false;
+    const othersWithPassword = memberAuthStatus.filter(m => m.userId !== currentUserId && m.hasPassword);
+    return othersWithPassword.length > 0;
   };
 
   const renderGoalCard = (goal: SavingsGoal) => {
@@ -471,6 +495,17 @@ export default function SavingsGoals() {
               </div>
             </div>
 
+            {/* Row 6: Owner */}
+            <div className="inline-edit-grid-row">
+              <span className="inline-edit-grid-label">Owner</span>
+              <div className="inline-edit-grid-value">
+                <OwnershipSelector
+                  value={editData.ownerId || null}
+                  onChange={(v) => inlineEdit.updateField('ownerId', v || '')}
+                />
+              </div>
+            </div>
+
             {/* Form error */}
             {inlineEdit.errors._form && (
               <div className="inline-edit-error" style={{ gridColumn: '1 / -1' }}>
@@ -558,6 +593,9 @@ export default function SavingsGoals() {
             </div>
           </div>
           <div style={{ display: 'flex', gap: '8px' }} onClick={(e) => e.stopPropagation()}>
+            {canShareGoal(goal) && (
+              <button onClick={() => setShareTarget({ id: goal.id, name: goal.name })} className="btn btn-secondary" style={{ padding: '4px 8px', fontSize: '12px' }}>Share</button>
+            )}
             <button onClick={(e) => handleStartInlineEdit(goal, e)} className="btn btn-secondary" style={{ padding: '4px 8px', fontSize: '12px' }}>Edit</button>
             <button onClick={() => handleDelete(goal)} className="btn btn-outline-danger" style={{ padding: '4px 8px', fontSize: '12px' }}>Delete</button>
           </div>
@@ -853,6 +891,13 @@ export default function SavingsGoals() {
             </div>
           </div>
 
+          <div style={{ marginBottom: '16px' }}>
+            <OwnershipSelector
+              value={formOwnerId}
+              onChange={setFormOwnerId}
+            />
+          </div>
+
           <div style={{ display: 'flex', gap: '8px' }}>
             <button type="submit" className="btn btn-primary">Create</button>
             <button type="button" onClick={resetForm} className="btn btn-secondary">Cancel</button>
@@ -880,6 +925,15 @@ export default function SavingsGoals() {
 
       {/* Detail panel (full-width below cards) */}
       {renderDetailPanel()}
+
+      {shareTarget && (
+        <ShareDialog
+          entityId={shareTarget.id}
+          entityType={'savings_goal' as EncryptableEntityType}
+          entityName={shareTarget.name}
+          onClose={() => setShareTarget(null)}
+        />
+      )}
     </div>
   );
 }
