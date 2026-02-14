@@ -99,3 +99,20 @@ jobs:
           gh release upload "v$version" "apps/desktop/release/Ledgr-$version.msi" --clobber
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  update-release-notes:
+    needs: [build-linux, build-windows]
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Append support link to release notes
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          EXISTING=$(gh release view "$TAG" --json body -q .body || echo "")
+          SUPPORT_LINK=$'\n\n---\n\n☕ If you find Ledgr useful, [buy me a coffee](https://buymeacoffee.com/jchilcher)!'
+          gh release edit "$TAG" --notes "${EXISTING}${SUPPORT_LINK}"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
