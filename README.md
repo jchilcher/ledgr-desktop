@@ -4,8 +4,11 @@
 
 [![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL--3.0-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
 [![Platform: Windows | macOS | Linux](https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey.svg)]()
+[![Latest Release](https://img.shields.io/github/v/release/jchilcher/ledgr-desktop)](https://github.com/jchilcher/ledgr-desktop/releases/latest)
 
 A privacy-focused desktop application for budget tracking and forecasting. All your financial data stays on your machine — no cloud, no telemetry, no third-party data sharing.
+
+**[Download the latest release](https://github.com/jchilcher/ledgr-desktop/releases/latest)**
 
 ## Features
 
