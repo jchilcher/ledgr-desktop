@@ -4,6 +4,62 @@ import { useInlineEdit } from '../hooks/useInlineEdit';
 import { EditableText, EditableNumber, EditableDate, EditableSelect } from './inline-edit';
 import ReimbursementModal from './ReimbursementModal';
 import SplitTransactionModal from './SplitTransactionModal';
+import AttachmentPanel from './AttachmentPanel';
+
+// Inline notes cell with click-to-edit behavior
+const NotesCell: React.FC<{ value: string; onSave: (value: string) => void }> = ({ value, onSave }) => {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(value);
+
+  const handleSave = () => {
+    setEditing(false);
+    if (draft !== value) {
+      onSave(draft);
+    }
+  };
+
+  if (!editing) {
+    return (
+      <span
+        onClick={() => { setDraft(value); setEditing(true); }}
+        style={{
+          cursor: 'pointer',
+          display: 'block',
+          overflow: 'hidden',
+          textOverflow: 'ellipsis',
+          whiteSpace: 'nowrap',
+          minHeight: '1.2em',
+          color: value ? 'var(--color-text)' : 'var(--color-text-muted)',
+          fontStyle: value ? 'normal' : 'italic',
+        }}
+        title={value || 'Click to add notes'}
+      >
+        {value || 'Add note...'}
+      </span>
+    );
+  }
+
+  return (
+    <input
+      type="text"
+      value={draft}
+      onChange={(e) => setDraft(e.target.value)}
+      onBlur={handleSave}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter') handleSave();
+        if (e.key === 'Escape') { setDraft(value); setEditing(false); }
+      }}
+      autoFocus
+      style={{
+        width: '100%',
+        fontSize: '12px',
+        padding: '2px 4px',
+        boxSizing: 'border-box',
+      }}
+      placeholder="Add note..."
+    />
+  );
+};
 
 interface TransactionListProps {
   accountId?: string | null;
@@ -88,6 +144,13 @@ const TransactionList: React.FC<TransactionListProps> = ({ accountId }) => {
   // Split transaction state
   const [splitModalTx, setSplitModalTx] = useState<Transaction | null>(null);
   const [splitTransactionIds, setSplitTransactionIds] = useState<Set<string>>(new Set());
+
+  // Attachment state
+  const [attachmentCounts, setAttachmentCounts] = useState<Record<string, number>>({});
+  const [attachmentPanelTx, setAttachmentPanelTx] = useState<Transaction | null>(null);
+
+  // Show hidden transactions toggle (default: off)
+  const [showHidden, setShowHidden] = useState(false);
 
   // Scroll position preservation
   const scrollPositionRef = useRef<number | null>(null);
@@ -180,6 +243,13 @@ const TransactionList: React.FC<TransactionListProps> = ({ accountId }) => {
       setReimbursementLinks(allReimbursementLinks);
       setSplitTransactionIds(new Set(allSplitIds));
 
+      // Load attachment counts for visible transactions
+      const txIds = allTransactions.map(t => t.id);
+      if (txIds.length > 0) {
+        const counts = await window.api.attachments.getCountsByTransactionIds(txIds).catch(() => ({}));
+        setAttachmentCounts(counts);
+      }
+
       // Compute suggestions for uncategorized transactions
       await computeSuggestions(allTransactions, allCategories);
     } catch (error) {
@@ -254,6 +324,11 @@ const TransactionList: React.FC<TransactionListProps> = ({ accountId }) => {
   // Apply filters and sorting
   const filteredAndSortedTransactions = transactions
     .filter((tx) => {
+      // Hidden filter: hide hidden transactions unless toggle is on
+      if (!showHidden && tx.isHidden) {
+        return false;
+      }
+
       // Search filter
       if (searchQuery && !tx.description.toLowerCase().includes(searchQuery.toLowerCase())) {
         return false;
@@ -380,6 +455,24 @@ const TransactionList: React.FC<TransactionListProps> = ({ accountId }) => {
       await loadData();
     } catch (error) {
       console.error('Error toggling internal transfer:', error);
+    }
+  };
+
+  const handleToggleHidden = async (transactionId: string, currentValue: boolean) => {
+    try {
+      await window.api.transactions.update(transactionId, { isHidden: !currentValue });
+      await loadData();
+    } catch (error) {
+      console.error('Error toggling hidden status:', error);
+    }
+  };
+
+  const handleNotesChange = async (transactionId: string, notes: string) => {
+    try {
+      await window.api.transactions.update(transactionId, { notes: notes || null });
+      await loadData();
+    } catch (error) {
+      console.error('Error updating notes:', error);
     }
   };
 
@@ -795,6 +888,16 @@ const TransactionList: React.FC<TransactionListProps> = ({ accountId }) => {
           <button onClick={resetFilters} className="btn btn-secondary" data-testid="reset-filters">
             Reset Filters
           </button>
+
+          <label style={{ display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer', fontSize: '14px' }}>
+            <input
+              type="checkbox"
+              checked={showHidden}
+              onChange={(e) => { setShowHidden(e.target.checked); setCurrentPage(1); }}
+              data-testid="show-hidden-toggle"
+            />
+            Show hidden
+          </label>
         </div>
       </div>
 
@@ -838,7 +941,9 @@ const TransactionList: React.FC<TransactionListProps> = ({ accountId }) => {
                   Category {sortColumn === 'category' && (sortDirection === 'asc' ? '↑' : '↓')}
                 </th>
                 <th>Account</th>
+                <th style={{ minWidth: '120px' }}>Notes</th>
                 <th style={{ whiteSpace: 'nowrap' }} title="Internal transfers are excluded from spending reports">Transfer</th>
+                <th style={{ whiteSpace: 'nowrap', textAlign: 'center' }} title="Hide from reports and analytics">Hide</th>
                 <th style={{ whiteSpace: 'nowrap' }} title="Reimbursement status">Reimb.</th>
                 <th>Actions</th>
               </tr>
@@ -911,6 +1016,9 @@ const TransactionList: React.FC<TransactionListProps> = ({ accountId }) => {
                         />
                       </td>
                       <td>{getAccountName(tx.accountId)}</td>
+                      <td style={{ padding: '8px', fontSize: '12px', color: 'var(--color-text-muted)' }}>
+                        {tx.notes || ''}
+                      </td>
                       <td style={{ textAlign: 'center' }}>
                         <input
                           type="checkbox"
@@ -919,6 +1027,23 @@ const TransactionList: React.FC<TransactionListProps> = ({ accountId }) => {
                           title="Mark as internal transfer (excluded from spending reports)"
                           disabled={inlineEdit.isSubmitting}
                         />
+                      </td>
+                      <td style={{ textAlign: 'center' }}>
+                        <button
+                          onClick={() => handleToggleHidden(tx.id, tx.isHidden || false)}
+                          style={{
+                            background: 'none',
+                            border: 'none',
+                            cursor: 'pointer',
+                            fontSize: '16px',
+                            padding: '2px 6px',
+                            opacity: tx.isHidden ? 1 : 0.4,
+                          }}
+                          title={tx.isHidden ? 'Unhide transaction (include in reports)' : 'Hide transaction (exclude from reports)'}
+                          disabled={inlineEdit.isSubmitting}
+                        >
+                          {tx.isHidden ? '\u{1F6AB}' : '\u{1F441}'}
+                        </button>
                       </td>
                       <td></td>
                       <td style={{ padding: '8px' }}>
@@ -951,7 +1076,7 @@ const TransactionList: React.FC<TransactionListProps> = ({ accountId }) => {
                 }
 
                 return (
-                  <tr key={tx.id} data-testid="transaction-row" className={selectedIds.has(tx.id) ? 'selected-row' : ''}>
+                  <tr key={tx.id} data-testid="transaction-row" className={selectedIds.has(tx.id) ? 'selected-row' : ''} style={tx.isHidden ? { opacity: 0.5 } : undefined}>
                     <td style={{ textAlign: 'center' }}>
                       <input
                         type="checkbox"
@@ -980,6 +1105,15 @@ const TransactionList: React.FC<TransactionListProps> = ({ accountId }) => {
                           title="This transaction has category splits"
                         >
                           Split
+                        </span>
+                      )}
+                      {attachmentCounts[tx.id] > 0 && (
+                        <span
+                          className="attachment-indicator"
+                          onClick={() => setAttachmentPanelTx(tx)}
+                          title={`${attachmentCounts[tx.id]} attachment${attachmentCounts[tx.id] > 1 ? 's' : ''}`}
+                        >
+                          {'\u{1F4CE}'} {attachmentCounts[tx.id]}
                         </span>
                       )}
                     </td>
@@ -1056,6 +1190,12 @@ const TransactionList: React.FC<TransactionListProps> = ({ accountId }) => {
                       )}
                     </td>
                     <td>{getAccountName(tx.accountId)}</td>
+                    <td style={{ maxWidth: '200px', fontSize: '12px' }}>
+                      <NotesCell
+                        value={tx.notes || ''}
+                        onSave={(val) => handleNotesChange(tx.id, val)}
+                      />
+                    </td>
                     <td style={{ textAlign: 'center' }}>
                       <input
                         type="checkbox"
@@ -1064,6 +1204,33 @@ const TransactionList: React.FC<TransactionListProps> = ({ accountId }) => {
                         title="Mark as internal transfer (excluded from spending reports)"
                         data-testid="internal-transfer-checkbox"
                       />
+                    </td>
+                    <td style={{ textAlign: 'center' }}>
+                      <button
+                        onClick={() => handleToggleHidden(tx.id, tx.isHidden || false)}
+                        style={{
+                          background: 'none',
+                          border: 'none',
+                          cursor: 'pointer',
+                          fontSize: '16px',
+                          padding: '2px 6px',
+                          opacity: tx.isHidden ? 1 : 0.4,
+                        }}
+                        title={tx.isHidden ? 'Unhide transaction (include in reports)' : 'Hide transaction (exclude from reports)'}
+                        data-testid="hide-toggle-btn"
+                      >
+                        {tx.isHidden ? '\u{1F6AB}' : '\u{1F441}'}
+                      </button>
+                      {tx.isHidden && (
+                        <span style={{
+                          display: 'block',
+                          fontSize: '10px',
+                          fontWeight: 600,
+                          color: 'var(--color-warning)',
+                        }}>
+                          Hidden
+                        </span>
+                      )}
                     </td>
                     <td style={{ textAlign: 'center', whiteSpace: 'nowrap' }}>
                       {(() => {
@@ -1123,6 +1290,14 @@ const TransactionList: React.FC<TransactionListProps> = ({ accountId }) => {
                             Split
                           </button>
                         )}
+                        <button
+                          onClick={() => setAttachmentPanelTx(tx)}
+                          className="btn btn-secondary"
+                          style={{ padding: '4px 8px', fontSize: '12px' }}
+                          title="Manage attachments for this transaction"
+                        >
+                          Files
+                        </button>
                         <button
                           onClick={() => openBulkCategoryModal(tx.description, tx.categoryId || '')}
                           className="btn btn-success"
@@ -1611,6 +1786,17 @@ const TransactionList: React.FC<TransactionListProps> = ({ accountId }) => {
           transaction={splitModalTx}
           onClose={() => setSplitModalTx(null)}
           onSave={() => loadData()}
+        />
+      )}
+
+      {attachmentPanelTx && (
+        <AttachmentPanel
+          transactionId={attachmentPanelTx.id}
+          transactionDescription={attachmentPanelTx.description}
+          onClose={() => {
+            setAttachmentPanelTx(null);
+            loadData();
+          }}
         />
       )}
     </div>

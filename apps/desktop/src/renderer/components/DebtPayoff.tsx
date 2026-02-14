@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { useHousehold } from '../contexts/HouseholdContext';
 
 type PayoffStrategy = 'minimum' | 'snowball' | 'avalanche';
 
@@ -51,6 +52,7 @@ interface DebtPayoffReport {
 }
 
 const DebtPayoff: React.FC = () => {
+  const { householdFilter } = useHousehold();
   const [report, setReport] = useState<DebtPayoffReport | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -59,7 +61,7 @@ const DebtPayoff: React.FC = () => {
 
   useEffect(() => {
     loadData();
-  }, []);
+  }, [householdFilter]);
 
   const loadData = async () => {
     try {

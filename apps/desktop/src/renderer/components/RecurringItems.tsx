@@ -1,8 +1,11 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { Account, Category, RecurringItem, RecurringItemType, RecurringFrequency, TransactionType } from '../../shared/types';
+import { Account, Category, RecurringItem, RecurringItemType, RecurringFrequency, TransactionType, UserAuthStatus, EncryptableEntityType } from '../../shared/types';
 import { useInlineEdit } from '../hooks/useInlineEdit';
 import { EditableText, EditableNumber, EditableSelect, EditableCheckbox } from './inline-edit';
 import EmptyState from './EmptyState';
+import OwnershipSelector from './OwnershipSelector';
+import ShareDialog from './ShareDialog';
+import { useHousehold } from '../contexts/HouseholdContext';
 
 type FilterMode = 'all' | 'bills' | 'subscriptions' | 'cashflow';
 
@@ -50,9 +53,11 @@ interface EditFormData {
   enableReminders: boolean;
   reminderDays: string;
   autopay: boolean;
+  ownerId: string;
 }
 
 export default function RecurringItems() {
+  const { currentUserId, householdFilter, filterByOwnership } = useHousehold();
   const [items, setItems] = useState<RecurringItem[]>([]);
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
@@ -75,8 +80,11 @@ export default function RecurringItems() {
     enableReminders: false,
     reminderDays: '3',
     autopay: false,
+    ownerId: currentUserId,
   });
   const [error, setError] = useState('');
+  const [shareTarget, setShareTarget] = useState<{ id: string; name: string } | null>(null);
+  const [memberAuthStatus, setMemberAuthStatus] = useState<UserAuthStatus[]>([]);
 
   // Inline edit hook
   const inlineEdit = useInlineEdit<EditFormData>({
@@ -109,6 +117,7 @@ export default function RecurringItems() {
         enableReminders,
         reminderDays: enableReminders ? parseInt(data.reminderDays || '3') : null,
         autopay: data.autopay,
+        ownerId: data.ownerId || null,
       };
 
       await window.api.recurring.update(id, updateData);
@@ -131,14 +140,17 @@ export default function RecurringItems() {
   const loadData = useCallback(async () => {
     try {
       setLoading(true);
-      const [allItems, allAccounts, allCategories] = await Promise.all([
+      const [allItems, allAccounts, allCategories, authStatuses] = await Promise.all([
         window.api.recurring.getAll(),
         window.api.accounts.getAll(),
         window.api.categories.getAll(),
+        window.api.security.getMemberAuthStatus().catch(() => [] as UserAuthStatus[]),
       ]);
-      setItems(allItems);
+      const visibleItems = filterByOwnership(allItems);
+      setItems(visibleItems);
       setAccounts(allAccounts);
       setCategories(allCategories);
+      setMemberAuthStatus(authStatuses);
 
       setFormData(prev => ({
         ...prev,
@@ -149,11 +161,11 @@ export default function RecurringItems() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [filterByOwnership]);
 
   useEffect(() => {
     loadData();
-  }, [loadData]);
+  }, [loadData, householdFilter]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -203,6 +215,7 @@ export default function RecurringItems() {
         reminderDays: enableReminders ? parseInt(formData.reminderDays) || 3 : null,
         autopay: formData.autopay,
         isActive: true,
+        ownerId: formData.ownerId || null,
       };
 
       await window.api.recurring.create(itemData);
@@ -266,6 +279,7 @@ export default function RecurringItems() {
       enableReminders: item.enableReminders,
       reminderDays: item.reminderDays?.toString() || '3',
       autopay: item.autopay,
+      ownerId: item.ownerId || '',
     });
   };
 
@@ -308,6 +322,7 @@ export default function RecurringItems() {
       enableReminders: false,
       reminderDays: '3',
       autopay: false,
+      ownerId: currentUserId,
     });
     setError('');
   };
@@ -367,6 +382,15 @@ export default function RecurringItems() {
     value: acc.id,
     label: acc.name,
   }));
+
+  const canShareItem = (item: RecurringItem): boolean => {
+    if (!currentUserId) return false;
+    if (item.ownerId && item.ownerId !== currentUserId) return false;
+    const currentUserAuth = memberAuthStatus.find(m => m.userId === currentUserId);
+    if (!currentUserAuth?.hasPassword) return false;
+    const othersWithPassword = memberAuthStatus.filter(m => m.userId !== currentUserId && m.hasPassword);
+    return othersWithPassword.length > 0;
+  };
 
   const renderCard = (item: RecurringItem) => {
     const isEditing = inlineEdit.editingId === item.id;
@@ -544,6 +568,17 @@ export default function RecurringItems() {
               </div>
             </div>
 
+            {/* Row 7: Owner */}
+            <div className="inline-edit-grid-row">
+              <span className="inline-edit-grid-label">Owner</span>
+              <div className="inline-edit-grid-value">
+                <OwnershipSelector
+                  value={editData.ownerId || null}
+                  onChange={(v) => inlineEdit.updateField('ownerId', v || '')}
+                />
+              </div>
+            </div>
+
             {/* Form error */}
             {inlineEdit.errors._form && (
               <div className="inline-edit-error" style={{ gridColumn: '1 / -1' }}>
@@ -647,6 +682,16 @@ export default function RecurringItems() {
             </div>
           </div>
           <div style={{ display: 'flex', gap: '8px' }}>
+            {canShareItem(item) && (
+              <button
+                onClick={() => setShareTarget({ id: item.id, name: item.description })}
+                className="btn btn-secondary"
+                style={{ padding: '4px 12px', fontSize: '13px' }}
+                title="Share"
+              >
+                Share
+              </button>
+            )}
             <button
               onClick={() => handleStartInlineEdit(item)}
               className="btn btn-secondary"
@@ -948,6 +993,14 @@ export default function RecurringItems() {
               )}
             </div>
 
+            {/* Owner selector */}
+            <div style={{ marginTop: '16px' }}>
+              <OwnershipSelector
+                value={formData.ownerId || null}
+                onChange={(v) => setFormData({ ...formData, ownerId: v })}
+              />
+            </div>
+
             <div style={{ marginTop: '16px', display: 'flex', gap: '10px' }}>
               <button type="submit" className="btn btn-success" disabled={loading}>
                 Create
@@ -982,6 +1035,15 @@ export default function RecurringItems() {
         <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
           {filteredItems.map(renderCard)}
         </div>
+      )}
+
+      {shareTarget && (
+        <ShareDialog
+          entityId={shareTarget.id}
+          entityType={'recurring_item' as EncryptableEntityType}
+          entityName={shareTarget.name}
+          onClose={() => setShareTarget(null)}
+        />
       )}
     </div>
   );

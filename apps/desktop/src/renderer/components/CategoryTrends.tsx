@@ -1,6 +1,8 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
 import { Category } from '../../shared/types';
+import ChartExportButton from './ChartExportButton';
+import { useHousehold } from '../contexts/HouseholdContext';
 
 interface CategoryTrendData {
   categoryId: string;
@@ -16,6 +18,8 @@ type DatePreset = 'last-3-months' | 'last-6-months' | 'this-year' | 'last-year' 
 type Grouping = 'day' | 'week' | 'month' | 'year';
 
 const CategoryTrends: React.FC = () => {
+  const { householdFilter } = useHousehold();
+  const chartRef = useRef<HTMLDivElement>(null);
   const [categories, setCategories] = useState<Category[]>([]);
   const [selectedCategories, setSelectedCategories] = useState<string[]>([]);
   const [trendData, setTrendData] = useState<CategoryTrendData[]>([]);
@@ -139,7 +143,7 @@ const CategoryTrends: React.FC = () => {
     };
 
     loadTrendData();
-  }, [selectedCategories, datePreset, grouping, startDate, endDate, getDateRange]);
+  }, [selectedCategories, datePreset, grouping, startDate, endDate, getDateRange, householdFilter]);
 
   // Persist selection changes to DB
   useEffect(() => {
@@ -346,6 +350,10 @@ const CategoryTrends: React.FC = () => {
         </div>
       ) : (
         <>
+          <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: '8px' }}>
+            <ChartExportButton chartRef={chartRef} filename="category-trends" />
+          </div>
+          <div ref={chartRef}>
           <ResponsiveContainer width="100%" height={400}>
             <LineChart data={chartData}>
               <CartesianGrid strokeDasharray="3 3" />
@@ -386,6 +394,7 @@ const CategoryTrends: React.FC = () => {
               })}
             </LineChart>
           </ResponsiveContainer>
+          </div>
 
           {/* Statistics Table */}
           <div className="card" style={{ marginTop: '30px' }}>

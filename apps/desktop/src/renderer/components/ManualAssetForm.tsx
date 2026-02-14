@@ -1,5 +1,7 @@
 import React, { useState } from 'react';
 import type { ManualAsset, ManualAssetCategory, AssetLiquidity } from '../../shared/types';
+import OwnershipSelector from './OwnershipSelector';
+import { useHousehold } from '../contexts/HouseholdContext';
 
 interface ManualAssetFormProps {
   asset?: ManualAsset;
@@ -23,6 +25,7 @@ const REMINDER_OPTIONS = [
 ];
 
 export function ManualAssetForm({ asset, onSubmit, onCancel }: ManualAssetFormProps) {
+  const { currentUserId } = useHousehold();
   const [name, setName] = useState(asset?.name ?? '');
   const [category, setCategory] = useState<ManualAssetCategory>(asset?.category ?? 'other');
   const [customCategory, setCustomCategory] = useState(asset?.customCategory ?? '');
@@ -30,6 +33,7 @@ export function ManualAssetForm({ asset, onSubmit, onCancel }: ManualAssetFormPr
   const [liquidity, setLiquidity] = useState<AssetLiquidity>(asset?.liquidity ?? 'illiquid');
   const [reminderFrequency, setReminderFrequency] = useState(asset?.reminderFrequency ?? '');
   const [notes, setNotes] = useState(asset?.notes ?? '');
+  const [ownerId, setOwnerId] = useState<string | null>(asset?.ownerId ?? currentUserId);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -53,12 +57,13 @@ export function ManualAssetForm({ asset, onSubmit, onCancel }: ManualAssetFormPr
         name: name.trim(),
         category,
         customCategory: category === 'custom' ? customCategory : null,
-        value: Math.round(Number(value) * 100), // Convert to cents
+        value: Math.round(Number(value) * 100),
         liquidity,
         reminderFrequency: (reminderFrequency || null) as 'monthly' | 'quarterly' | 'yearly' | null,
         notes: notes.trim() || null,
         lastReminderDate: null,
         nextReminderDate: null,
+        ownerId: ownerId || null,
       });
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to save asset');
@@ -173,6 +178,13 @@ export function ManualAssetForm({ asset, onSubmit, onCancel }: ManualAssetFormPr
           onChange={e => setNotes(e.target.value)}
           rows={2}
           style={{ width: '100%', padding: '8px 12px', border: '1px solid var(--color-border)', borderRadius: 'var(--radius-md)', resize: 'vertical' }}
+        />
+      </div>
+
+      <div>
+        <OwnershipSelector
+          value={ownerId}
+          onChange={setOwnerId}
         />
       </div>
 

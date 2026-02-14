@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { Account, Category } from '../../shared/types';
 import type {
   EnhancedBalanceProjection,
@@ -14,6 +14,9 @@ import {
   Area,
   ComposedChart,
 } from 'recharts';
+import ChartExportButton from './ChartExportButton';
+import SankeyDiagram from './SankeyDiagram';
+import { useHousehold } from '../contexts/HouseholdContext';
 
 interface CashFlowProjection {
   date: string;
@@ -242,6 +245,9 @@ const EditableAmount: React.FC<EditableAmountProps> = ({
 };
 
 const CashFlowForecast: React.FC = () => {
+  const { householdFilter, filterByOwnership } = useHousehold();
+  const [subTab, setSubTab] = useState<'forecast' | 'flow'>('forecast');
+  const chartRef = useRef<HTMLDivElement>(null);
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
   const [selectedAccountId, setSelectedAccountId] = useState<string>(ALL_ACCOUNTS);
@@ -272,10 +278,11 @@ const CashFlowForecast: React.FC = () => {
       window.api.accounts.getAll(),
       window.api.categories.getAll(),
     ]);
-    setAccounts(allAccounts);
+    const visibleAccounts = filterByOwnership(allAccounts);
+    setAccounts(visibleAccounts);
     // Include all categories (both income and expense)
     setCategories(allCategories);
-  }, []);
+  }, [filterByOwnership]);
 
   const loadForecast = useCallback(async () => {
     if (accounts.length === 0) return;
@@ -552,7 +559,7 @@ const CashFlowForecast: React.FC = () => {
 
   useEffect(() => {
     loadAccounts();
-  }, [loadAccounts]);
+  }, [loadAccounts, householdFilter]);
 
   useEffect(() => {
     if (accounts.length > 0) {
@@ -612,6 +619,24 @@ const CashFlowForecast: React.FC = () => {
 
   return (
     <div style={{ padding: '20px' }}>
+      <div className="sub-tabs">
+        <button
+          className={`sub-tab ${subTab === 'forecast' ? 'sub-tab--active' : ''}`}
+          onClick={() => setSubTab('forecast')}
+        >
+          Forecast
+        </button>
+        <button
+          className={`sub-tab ${subTab === 'flow' ? 'sub-tab--active' : ''}`}
+          onClick={() => setSubTab('flow')}
+        >
+          Flow Diagram
+        </button>
+      </div>
+
+      {subTab === 'flow' && <SankeyDiagram />}
+
+      {subTab === 'forecast' && (<>
       <h2>Cash Flow Forecast</h2>
       <p style={{ color: 'var(--color-text-muted)', marginBottom: '20px' }}>
         Project your account balance based on recurring transactions
@@ -1294,14 +1319,18 @@ const CashFlowForecast: React.FC = () => {
           {/* Balance Chart with Confidence Bands */}
           {forecast.projections.length > 0 && (
             <div className="card" style={{ marginBottom: '20px', padding: '20px' }}>
-              <h3 style={{ marginTop: 0, marginBottom: '15px' }}>
-                Projected Balance Over Time
-                {includeCategoryTrends && (
-                  <span style={{ fontSize: '13px', fontWeight: 'normal', color: 'var(--color-text-muted)', marginLeft: '10px' }}>
-                    (shaded area = confidence range)
-                  </span>
-                )}
-              </h3>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '15px' }}>
+                <h3 style={{ margin: 0 }}>
+                  Projected Balance Over Time
+                  {includeCategoryTrends && (
+                    <span style={{ fontSize: '13px', fontWeight: 'normal', color: 'var(--color-text-muted)', marginLeft: '10px' }}>
+                      (shaded area = confidence range)
+                    </span>
+                  )}
+                </h3>
+                <ChartExportButton chartRef={chartRef} filename="cashflow-forecast" />
+              </div>
+              <div ref={chartRef}>
               <ResponsiveContainer width="100%" height={300}>
                 <ComposedChart
                   data={sampledChartData}
@@ -1369,6 +1398,7 @@ const CashFlowForecast: React.FC = () => {
                   />
                 </ComposedChart>
               </ResponsiveContainer>
+              </div>
             </div>
           )}
 
@@ -1712,6 +1742,7 @@ const CashFlowForecast: React.FC = () => {
           <p style={{ color: 'var(--color-text-muted)' }}>No accounts found. Create an account to see cash flow forecasts.</p>
         </div>
       )}
+      </>)}
     </div>
   );
 };

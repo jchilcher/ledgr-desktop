@@ -3,6 +3,16 @@
 export type AccountType = 'checking' | 'savings' | 'credit';
 export type TransactionType = 'income' | 'expense';
 export type ImportSource = 'file' | 'ofx';
+export type OwnershipType = 'mine' | 'partner' | 'shared';
+export type HouseholdFilter = 'all' | string; // 'all' or a userId
+
+export interface User {
+  id: string;
+  name: string;
+  color: string;
+  isDefault: boolean;
+  createdAt: Date;
+}
 export type RecurringFrequency = 'daily' | 'weekly' | 'biweekly' | 'monthly' | 'quarterly' | 'yearly';
 export type RecurringItemType = 'bill' | 'subscription' | 'cashflow';
 export type PaymentStatus = 'pending' | 'paid' | 'overdue' | 'skipped';
@@ -21,6 +31,10 @@ export interface Account {
   ofxFid?: string | null;
   ofxUsername?: string | null;
   ofxAccountId?: string | null;
+  // Household ownership
+  ownership?: OwnershipType;
+  ownerId?: string | null;
+  isEncrypted?: boolean;
 }
 
 export interface Transaction {
@@ -35,6 +49,8 @@ export interface Transaction {
   createdAt: Date;
   fitId?: string | null; // Financial Institution Transaction ID for dedup
   isInternalTransfer?: boolean; // Internal transfers are excluded from analytics
+  notes?: string | null; // User notes for the transaction
+  isHidden?: boolean; // Hidden transactions are excluded from reports/analytics
 }
 
 export interface Category {
@@ -85,6 +101,8 @@ export interface RecurringItem {
   reminderDays?: number | null; // Days before due to remind
   autopay: boolean;
   isActive: boolean;
+  ownerId?: string | null;
+  isEncrypted?: boolean;
   createdAt: Date;
 }
 
@@ -97,6 +115,12 @@ export interface RecurringPayment {
   status: PaymentStatus;
   transactionId?: string | null;
   createdAt: Date;
+}
+
+export interface RecurringPaymentWithItem extends RecurringPayment {
+  description: string;
+  itemType: RecurringItemType;
+  itemAmount: number;
 }
 
 // Phase 1: Tags
@@ -243,6 +267,9 @@ export interface ManualAsset {
   reminderFrequency?: 'monthly' | 'quarterly' | 'yearly' | null;
   lastReminderDate?: Date | null;
   nextReminderDate?: Date | null;
+  // Ownership
+  ownerId?: string | null;
+  isEncrypted?: boolean;
   // Tracking
   lastUpdated: Date;
   createdAt: Date;
@@ -265,6 +292,9 @@ export interface ManualLiability {
   // Computed fields (stored for efficiency)
   payoffDate?: Date | null;        // Projected payoff date
   totalInterest?: number | null;   // Total interest over remaining life
+  // Ownership
+  ownerId?: string | null;
+  isEncrypted?: boolean;
   // Tracking
   lastUpdated: Date;
   notes?: string | null;
@@ -323,6 +353,8 @@ export interface SavingsGoal {
   icon?: string | null;
   color?: string | null;
   isActive: boolean;
+  ownerId?: string | null;
+  isEncrypted?: boolean;
   createdAt: Date;
 }
 
@@ -390,6 +422,8 @@ export interface InvestmentAccount {
   name: string;
   institution: string;
   accountType: InvestmentAccountType;
+  ownerId?: string | null;
+  isEncrypted?: boolean;
   createdAt: Date;
 }
 
@@ -1168,11 +1202,41 @@ export interface ReimbursementSummary {
   links: TransactionReimbursement[];
 }
 
+// Flex Budget Mode
+export type BudgetMode = 'category' | 'flex';
+
+export interface FlexBudgetConfig {
+  mode: BudgetMode;
+  flexTarget: number; // monthly target in cents
+  fixedCategoryIds: string[]; // categories tagged as fixed expenses
+}
+
 // Security
-export interface SecurityStatus {
-  enabled: boolean;
-  isLocked: boolean;
-  autoLockMinutes: number;
+export interface UserAuthStatus {
+  userId: string;
+  name: string;
+  color: string;
+  hasPassword: boolean;
+}
+
+// Saved Reports
+export interface SavedReport {
+  id: string;
+  name: string;
+  config: string; // JSON serialized report configuration
+  createdAt: Date;
+  lastAccessedAt: Date;
+}
+
+// Phase 8: Transaction Attachments
+export interface TransactionAttachment {
+  id: string;
+  transactionId: string;
+  filename: string;
+  filePath: string;
+  mimeType: string;
+  fileSize: number;
+  createdAt: Date;
 }
 
 // Database metadata for export/import comparison
@@ -1188,4 +1252,39 @@ export interface DatabaseMetadata {
 export interface DatabaseComparisonInfo {
   current: DatabaseMetadata | null;
   imported: DatabaseMetadata | null;
+}
+
+// Encryption types
+export type EncryptableEntityType = 'account' | 'recurring_item' | 'savings_goal' | 'manual_asset' | 'manual_liability' | 'investment_account';
+
+export interface SharePermissions {
+  view: boolean;
+  combine: boolean;
+  reports: boolean;
+}
+
+export interface DataShare {
+  id: string;
+  entityId: string;
+  entityType: EncryptableEntityType;
+  ownerId: string;
+  recipientId: string;
+  wrappedDek: string;
+  permissions: SharePermissions;
+  createdAt: Date;
+}
+
+export interface SharingDefault {
+  id: string;
+  ownerId: string;
+  recipientId: string;
+  entityType: EncryptableEntityType;
+  permissions: SharePermissions;
+  createdAt: Date;
+}
+
+export interface UserEncryptionStatus {
+  userId: string;
+  hasKeys: boolean;
+  publicKey?: string;
 }

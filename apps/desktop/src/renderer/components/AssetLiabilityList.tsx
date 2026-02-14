@@ -1,7 +1,9 @@
-import { useState } from 'react';
-import type { ManualAsset, ManualLiability } from '../../shared/types';
+import { useState, useEffect } from 'react';
+import type { ManualAsset, ManualLiability, UserAuthStatus, EncryptableEntityType } from '../../shared/types';
 import { ManualAssetForm } from './ManualAssetForm';
 import { ManualLiabilityForm } from './ManualLiabilityForm';
+import ShareDialog from './ShareDialog';
+import { useHousehold } from '../contexts/HouseholdContext';
 
 interface AssetLiabilityListProps {
   assets: ManualAsset[];
@@ -33,8 +35,26 @@ export function AssetLiabilityList({
   onDeleteLiability,
   className,
 }: AssetLiabilityListProps) {
+  const { currentUserId } = useHousehold();
   const [modalState, setModalState] = useState<ModalState>({ type: 'none' });
   const [deleteConfirm, setDeleteConfirm] = useState<{ type: 'asset' | 'liability'; id: string } | null>(null);
+  const [shareTarget, setShareTarget] = useState<{ id: string; name: string; entityType: EncryptableEntityType } | null>(null);
+  const [memberAuthStatus, setMemberAuthStatus] = useState<UserAuthStatus[]>([]);
+
+  useEffect(() => {
+    window.api.security.getMemberAuthStatus()
+      .then(setMemberAuthStatus)
+      .catch(() => {});
+  }, []);
+
+  const canShare = (ownerId: string | null | undefined): boolean => {
+    if (!currentUserId) return false;
+    if (ownerId && ownerId !== currentUserId) return false;
+    const currentUserAuth = memberAuthStatus.find(m => m.userId === currentUserId);
+    if (!currentUserAuth?.hasPassword) return false;
+    const othersWithPassword = memberAuthStatus.filter(m => m.userId !== currentUserId && m.hasPassword);
+    return othersWithPassword.length > 0;
+  };
 
   const formatCurrency = (value: number) => {
     return new Intl.NumberFormat('en-US', {
@@ -111,6 +131,14 @@ export function AssetLiabilityList({
                     <span style={{ fontWeight: 600, color: 'var(--color-success)' }}>
                       {formatCurrency(asset.value)}
                     </span>
+                    {canShare(asset.ownerId) && (
+                      <button
+                        onClick={() => setShareTarget({ id: asset.id, name: asset.name, entityType: 'manual_asset' })}
+                        style={{ color: 'var(--color-text-muted)', background: 'none', border: 'none', cursor: 'pointer', padding: '4px', fontSize: '14px' }}
+                      >
+                        Share
+                      </button>
+                    )}
                     <button
                       onClick={() => setModalState({ type: 'edit-asset', asset })}
                       style={{ color: 'var(--color-text-muted)', background: 'none', border: 'none', cursor: 'pointer', padding: '4px', fontSize: '14px' }}
@@ -163,6 +191,14 @@ export function AssetLiabilityList({
                     <span style={{ fontWeight: 600, color: 'var(--color-danger)' }}>
                       {formatCurrency(liability.balance)}
                     </span>
+                    {canShare(liability.ownerId) && (
+                      <button
+                        onClick={() => setShareTarget({ id: liability.id, name: liability.name, entityType: 'manual_liability' })}
+                        style={{ color: 'var(--color-text-muted)', background: 'none', border: 'none', cursor: 'pointer', padding: '4px', fontSize: '14px' }}
+                      >
+                        Share
+                      </button>
+                    )}
                     <button
                       onClick={() => setModalState({ type: 'edit-liability', liability })}
                       style={{ color: 'var(--color-text-muted)', background: 'none', border: 'none', cursor: 'pointer', padding: '4px', fontSize: '14px' }}
@@ -309,6 +345,15 @@ export function AssetLiabilityList({
             </div>
           </div>
         </div>
+      )}
+
+      {shareTarget && (
+        <ShareDialog
+          entityId={shareTarget.id}
+          entityType={shareTarget.entityType}
+          entityName={shareTarget.name}
+          onClose={() => setShareTarget(null)}
+        />
       )}
     </div>
   );

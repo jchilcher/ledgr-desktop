@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useRef } from 'react';
 import {
   LineChart,
   Line,
@@ -12,6 +12,7 @@ import {
   Legend,
 } from 'recharts';
 import { useNetWorthHistoryRange } from '../hooks/useNetWorth';
+import ChartExportButton from './ChartExportButton';
 
 type TimeRange = '1M' | '3M' | '6M' | '1Y' | 'ALL' | 'CUSTOM';
 type ChartMode = 'total' | 'stacked';
@@ -21,6 +22,7 @@ interface NetWorthChartProps {
 }
 
 export function NetWorthChart({ className }: NetWorthChartProps) {
+  const chartRef = useRef<HTMLDivElement>(null);
   const [timeRange, setTimeRange] = useState<TimeRange>('1Y');
   const [chartMode, setChartMode] = useState<ChartMode>('total');
   const [customStartDate, setCustomStartDate] = useState<Date | null>(null);
@@ -118,7 +120,8 @@ export function NetWorthChart({ className }: NetWorthChartProps) {
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
         <h3 style={{ margin: 0 }}>Net Worth History</h3>
 
-        <div style={{ display: 'flex', gap: '16px' }}>
+        <div style={{ display: 'flex', gap: '16px', alignItems: 'center' }}>
+          <ChartExportButton chartRef={chartRef} filename="net-worth" />
           {/* Time range selector */}
           <div style={{ display: 'flex', gap: '4px' }}>
             {timeRangeButtons.map(range => (
@@ -182,7 +185,7 @@ export function NetWorthChart({ className }: NetWorthChartProps) {
       )}
 
       {/* Chart */}
-      <div style={{ height: '320px' }}>
+      <div ref={chartRef} style={{ height: '320px' }}>
         {chartData.length === 0 ? (
           <div style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--color-text-muted)' }}>
             No historical data available. Net worth will be tracked over time.

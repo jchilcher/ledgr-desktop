@@ -1,6 +1,6 @@
 {
   "name": "@ledgr/desktop",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "private": true,
   "description": "Privacy-focused desktop application for budget tracking and forecasting",
   "main": "dist/main/main/main.js",
@@ -20,6 +20,7 @@
     "dist:msi": "node scripts/build-msi.js",
     "start": "electron .",
     "test": "jest",
+    "seed": "tsc -p tsconfig.main.json && electron --no-sandbox dist/main/scripts/seed-dev-data.js",
     "lint": "eslint . --ext .ts,.tsx",
     "lint:fix": "eslint . --ext .ts,.tsx --fix"
   },
@@ -37,6 +38,7 @@
     "@testing-library/jest-dom": "^6.1.5",
     "@testing-library/react": "^14.1.2",
     "@types/better-sqlite3": "^7.6.8",
+    "@types/d3-sankey": "^0.12.5",
     "@types/jest": "^29.5.11",
     "@types/node": "^20.10.6",
     "@types/react": "^18.2.46",
@@ -65,12 +67,14 @@
     "@tanstack/react-query": "^5.90.20",
     "better-sqlite3": "^9.2.2",
     "chart.js": "^4.4.1",
+    "d3-sankey": "^0.12.3",
     "date-fns": "^4.1.0",
     "electron-store": "^8.2.0",
     "electron-updater": "^6.7.3",
     "react": "^18.2.0",
     "react-chartjs-2": "^5.2.0",
     "react-dom": "^18.2.0",
+    "react-grid-layout": "^1.5.0",
     "recharts": "^3.6.0",
     "uuid": "^13.0.0"
   }

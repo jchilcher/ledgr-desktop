@@ -1,7 +1,10 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { InvestmentAccount, InvestmentAccountType, Holding } from '../../shared/types';
+import { InvestmentAccount, InvestmentAccountType, Holding, UserAuthStatus, EncryptableEntityType } from '../../shared/types';
 import { HoldingsTable } from './HoldingsTable';
 import { usePrices } from '../hooks/usePrices';
+import OwnershipSelector from './OwnershipSelector';
+import ShareDialog from './ShareDialog';
+import { useHousehold } from '../contexts/HouseholdContext';
 
 interface InvestmentAccountsProps {
   onSelectAccount: (accountId: string) => void;
@@ -16,6 +19,7 @@ const accountTypeLabels: Record<InvestmentAccountType, string> = {
 };
 
 export function InvestmentAccounts({ onSelectAccount: _onSelectAccount }: InvestmentAccountsProps) {
+  const { currentUserId, householdFilter, filterByOwnership } = useHousehold();
   const [accounts, setAccounts] = useState<InvestmentAccount[]>([]);
   const [holdings, setHoldings] = useState<Map<string, Holding[]>>(new Map());
   const [selectedAccountId, setSelectedAccountId] = useState<string | null>(null);
@@ -25,6 +29,7 @@ export function InvestmentAccounts({ onSelectAccount: _onSelectAccount }: Invest
     name: '',
     institution: '',
     accountType: 'taxable' as InvestmentAccountType,
+    ownerId: currentUserId,
   });
   const [error, setError] = useState('');
   const [deleteConfirm, setDeleteConfirm] = useState<{
@@ -32,6 +37,8 @@ export function InvestmentAccounts({ onSelectAccount: _onSelectAccount }: Invest
     account: InvestmentAccount | null;
   }>({ show: false, account: null });
   const [loading, setLoading] = useState(false);
+  const [shareTarget, setShareTarget] = useState<{ id: string; name: string } | null>(null);
+  const [memberAuthStatus, setMemberAuthStatus] = useState<UserAuthStatus[]>([]);
   const [undoTimer, setUndoTimer] = useState<NodeJS.Timeout | null>(null);
   const [deletedAccount, setDeletedAccount] = useState<{
     account: InvestmentAccount;
@@ -40,17 +47,22 @@ export function InvestmentAccounts({ onSelectAccount: _onSelectAccount }: Invest
 
   useEffect(() => {
     loadAccounts();
-  }, []);
+  }, [householdFilter]);
 
   const loadAccounts = async () => {
     try {
       setLoading(true);
-      const allAccounts = await window.api.investmentAccounts.getAll();
-      setAccounts(allAccounts);
+      const [allAccounts, authStatuses] = await Promise.all([
+        window.api.investmentAccounts.getAll(),
+        window.api.security.getMemberAuthStatus().catch(() => [] as UserAuthStatus[]),
+      ]);
+      const visibleAccounts = filterByOwnership(allAccounts);
+      setAccounts(visibleAccounts);
+      setMemberAuthStatus(authStatuses);
 
-      // Load holdings for each account
+      // Load holdings for each visible account
       const holdingsMap = new Map<string, Holding[]>();
-      for (const account of allAccounts) {
+      for (const account of visibleAccounts) {
         const accountHoldings = await window.api.holdings.getByAccount(account.id);
         holdingsMap.set(account.id, accountHoldings);
       }
@@ -142,15 +154,17 @@ export function InvestmentAccounts({ onSelectAccount: _onSelectAccount }: Invest
           name: formData.name.trim(),
           institution: formData.institution.trim(),
           accountType: formData.accountType,
+          ownerId: formData.ownerId || null,
         });
       } else {
         await window.api.investmentAccounts.create({
           name: formData.name.trim(),
           institution: formData.institution.trim(),
           accountType: formData.accountType,
+          ownerId: formData.ownerId || null,
         });
       }
-      setFormData({ name: '', institution: '', accountType: 'taxable' });
+      setFormData({ name: '', institution: '', accountType: 'taxable', ownerId: currentUserId });
       setShowForm(false);
       setEditingId(null);
       await loadAccounts();
@@ -166,6 +180,7 @@ export function InvestmentAccounts({ onSelectAccount: _onSelectAccount }: Invest
       name: account.name,
       institution: account.institution,
       accountType: account.accountType,
+      ownerId: account.ownerId || null,
     });
     setEditingId(account.id);
     setShowForm(true);
@@ -173,7 +188,7 @@ export function InvestmentAccounts({ onSelectAccount: _onSelectAccount }: Invest
   };
 
   const handleCancelForm = () => {
-    setFormData({ name: '', institution: '', accountType: 'taxable' });
+    setFormData({ name: '', institution: '', accountType: 'taxable', ownerId: currentUserId });
     setShowForm(false);
     setEditingId(null);
     setError('');
@@ -226,6 +241,7 @@ export function InvestmentAccounts({ onSelectAccount: _onSelectAccount }: Invest
         name: deletedAccount.account.name,
         institution: deletedAccount.account.institution,
         accountType: deletedAccount.account.accountType,
+        ownerId: deletedAccount.account.ownerId || null,
       });
 
       setDeletedAccount(null);
@@ -235,6 +251,15 @@ export function InvestmentAccounts({ onSelectAccount: _onSelectAccount }: Invest
     } finally {
       setLoading(false);
     }
+  };
+
+  const canShareAccount = (account: InvestmentAccount): boolean => {
+    if (!currentUserId) return false;
+    if (account.ownerId && account.ownerId !== currentUserId) return false;
+    const currentUserAuth = memberAuthStatus.find(m => m.userId === currentUserId);
+    if (!currentUserAuth?.hasPassword) return false;
+    const othersWithPassword = memberAuthStatus.filter(m => m.userId !== currentUserId && m.hasPassword);
+    return othersWithPassword.length > 0;
   };
 
   const handleAccountClick = (accountId: string) => {
@@ -326,6 +351,12 @@ export function InvestmentAccounts({ onSelectAccount: _onSelectAccount }: Invest
                 ))}
               </select>
             </div>
+            <div style={{ marginBottom: 'var(--space-4)' }}>
+              <OwnershipSelector
+                value={formData.ownerId}
+                onChange={(v) => setFormData({ ...formData, ownerId: v })}
+              />
+            </div>
             <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
               <button type="submit" disabled={loading} className="btn btn-primary">
                 {editingId ? 'Save Changes' : 'Create Account'}
@@ -394,6 +425,18 @@ export function InvestmentAccounts({ onSelectAccount: _onSelectAccount }: Invest
                 </div>
 
                 <div className="account-card-actions">
+                  {canShareAccount(account) && (
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setShareTarget({ id: account.id, name: account.name });
+                      }}
+                      disabled={loading}
+                      className="btn btn-secondary"
+                    >
+                      Share
+                    </button>
+                  )}
                   <button
                     onClick={(e) => {
                       e.stopPropagation();
@@ -474,6 +517,15 @@ export function InvestmentAccounts({ onSelectAccount: _onSelectAccount }: Invest
             Undo
           </button>
         </div>
+      )}
+
+      {shareTarget && (
+        <ShareDialog
+          entityId={shareTarget.id}
+          entityType={'investment_account' as EncryptableEntityType}
+          entityName={shareTarget.name}
+          onClose={() => setShareTarget(null)}
+        />
       )}
     </div>
   );

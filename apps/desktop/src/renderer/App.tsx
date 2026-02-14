@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Account, DatabaseMetadata } from '../shared/types';
+import { Account, DatabaseMetadata, UserAuthStatus } from '../shared/types';
+import { HouseholdProvider, useHousehold } from './contexts/HouseholdContext';
 import TransactionList from './components/TransactionList';
 import Dashboard from './components/Dashboard';
 import SpendingVisualization from './components/SpendingVisualization';
@@ -19,7 +20,6 @@ import SavingsGoals from './components/SavingsGoals';
 import ExportModal from './components/ExportModal';
 import { ToastContainer, useToast } from './components/Toast';
 import { ThemeProvider } from './contexts/ThemeContext';
-import ThemeToggle from './components/ThemeToggle';
 import { QueryClientProvider } from '@tanstack/react-query';
 import { queryClient } from './queryClient';
 // Phase 7: Prediction & Reporting
@@ -49,31 +49,61 @@ import PasswordSettings from './components/PasswordSettings';
 import FindBar from './components/FindBar';
 import OnboardingWizard from './components/OnboardingWizard';
 import EmptyState from './components/EmptyState';
-import InsightsLanding from './components/InsightsLanding';
+import Sidebar from './components/Sidebar';
+import AnalyticsLanding, { AnalyticsToolId } from './components/AnalyticsLanding';
+import MonthInReview from './components/MonthInReview';
+import YearInReview from './components/YearInReview';
+import TransactionReviewQueue from './components/TransactionReviewQueue';
+import HouseholdSettings from './components/HouseholdSettings';
+import PrivacySettings from './components/PrivacySettings';
+import BankExportGuide from './components/BankExportGuide';
+import TutorialOverlay from './components/TutorialOverlay';
 
-type ViewType = 'dashboard' | 'import' | 'transactions' | 'reports' | 'recurring' | 'rules' | 'budgets' | 'networth' | 'savings' | 'settings' | 'insights' | 'investments' | 'lock';
+type ViewType = 'dashboard' | 'transactions' | 'recurring' | 'budgets' | 'savings' | 'networth' | 'investments' | 'analytics' | 'settings' | 'privacy' | 'lock';
 
-const validViews: ViewType[] = ['dashboard', 'import', 'transactions', 'reports', 'recurring', 'rules', 'budgets', 'networth', 'savings', 'settings', 'insights', 'investments', 'lock'];
+const validViews: ViewType[] = ['dashboard', 'transactions', 'recurring', 'budgets', 'savings', 'networth', 'investments', 'analytics', 'settings', 'privacy', 'lock'];
+
+const legacyViewMap: Record<string, ViewType> = {
+  reports: 'analytics',
+  insights: 'analytics',
+  import: 'transactions',
+  rules: 'settings',
+  'review-queue': 'transactions',
+};
+
+let initialTransactionsTab: 'list' | 'import' | 'review' = 'list';
+let initialSettingsTab: 'general' | 'categories' | 'rules' | 'household' | 'security' | 'data' = 'general';
 
 function getInitialView(): ViewType {
   const urlParams = new URLSearchParams(window.location.search);
   const viewParam = urlParams.get('view');
-  if (viewParam && validViews.includes(viewParam as ViewType)) {
-    return viewParam as ViewType;
+  if (viewParam) {
+    if (validViews.includes(viewParam as ViewType)) {
+      return viewParam as ViewType;
+    }
+    const mapped = legacyViewMap[viewParam];
+    if (mapped) {
+      if (viewParam === 'import') initialTransactionsTab = 'import';
+      if (viewParam === 'review-queue') initialTransactionsTab = 'review';
+      if (viewParam === 'rules') initialSettingsTab = 'rules';
+      return mapped;
+    }
   }
   return 'dashboard';
 }
 
-const App: React.FC = () => {
+const AppContent: React.FC = () => {
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [selectedAccountId, setSelectedAccountId] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [showAccountForm, setShowAccountForm] = useState(false);
   const [activeView, setActiveView] = useState<ViewType>(getInitialView);
   const [showExportModal, setShowExportModal] = useState(false);
-  const [reportType, setReportType] = useState<'spending' | 'income-vs-expenses' | 'trends' | 'cashflow' | 'category-forecast' | 'income-analysis'>('spending');
-  const [insightType, setInsightType] = useState<'recovery' | 'simulator' | 'emergency' | 'anomalies' | 'seasonal' | 'income' | 'velocity' | 'subscriptions' | 'health' | 'debt' | 'migration' | 'cashflow'>('recovery');
+  const [analyticsToolId, setAnalyticsToolId] = useState<AnalyticsToolId | null>(null);
+  const [transactionsTab, setTransactionsTab] = useState<'list' | 'import' | 'review'>(initialTransactionsTab);
+  const [settingsTab, setSettingsTab] = useState<'general' | 'categories' | 'rules' | 'household' | 'security' | 'data'>(initialSettingsTab);
   const [investmentTab, setInvestmentTab] = useState<'holdings' | 'performance'>('holdings');
+  const [recurringTab, setRecurringTab] = useState<'items' | 'calendar'>('items');
   const [newAccountName, setNewAccountName] = useState('');
   const [newAccountType, setNewAccountType] = useState<'checking' | 'savings' | 'credit'>('checking');
   const [newAccountInstitution, setNewAccountInstitution] = useState('');
@@ -90,11 +120,19 @@ const App: React.FC = () => {
   const [versionString, setVersionString] = useState('');
   // Security state
   const [isLocked, setIsLocked] = useState(false);
-  const [securityEnabled, setSecurityEnabled] = useState(false);
   const [isStartupLock, setIsStartupLock] = useState(false);
+
+  // Household context
+  const household = useHousehold();
+
+  // Per-member auth state
+  const [memberAuthStatus, setMemberAuthStatus] = useState<UserAuthStatus[]>([]);
 
   // Onboarding state
   const [showOnboarding, setShowOnboarding] = useState(false);
+
+  // Tutorial state
+  const [showTutorial, setShowTutorial] = useState<AnalyticsToolId | null>(null);
 
   // Phase 10: Database Import/Export state
   const [importDialogOpen, setImportDialogOpen] = useState(false);
@@ -113,9 +151,10 @@ const App: React.FC = () => {
     }
   }, [activeView]);
 
-  // Load accounts on mount
+  // Load accounts and member auth on mount
   useEffect(() => {
     loadAccounts();
+    loadMemberAuthStatus();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -133,6 +172,18 @@ const App: React.FC = () => {
     }).catch(() => {});
   }, []);
 
+  // Tutorial: check if tool needs tutorial on first visit
+  useEffect(() => {
+    if (!analyticsToolId) return;
+    let cancelled = false;
+    window.api.tutorials.isCompleted(analyticsToolId).then(status => {
+      if (!cancelled && status !== 'true') {
+        setShowTutorial(analyticsToolId);
+      }
+    }).catch(() => {});
+    return () => { cancelled = true; };
+  }, [analyticsToolId]);
+
   // Security: check status, listen for lock/unlock, handle startup lock
   useEffect(() => {
     // Check if this is the startup lock view
@@ -141,11 +192,6 @@ const App: React.FC = () => {
       setIsLocked(true);
       return;
     }
-
-    // Fetch security status
-    window.api.security.getStatus().then(status => {
-      setSecurityEnabled(status.enabled);
-    }).catch(() => {});
 
     // Listen for lock/unlock events
     const removeLock = window.api.security.onLock(() => {
@@ -163,8 +209,6 @@ const App: React.FC = () => {
 
   // Activity heartbeat for auto-lock
   useEffect(() => {
-    if (!securityEnabled) return;
-
     let hasActivity = false;
 
     const markActivity = () => { hasActivity = true; };
@@ -188,7 +232,7 @@ const App: React.FC = () => {
       window.removeEventListener('scroll', markActivity);
       clearInterval(heartbeatInterval);
     };
-  }, [securityEnabled]);
+  }, []);
 
   const loadAccounts = async () => {
     try {
@@ -204,6 +248,15 @@ const App: React.FC = () => {
       }
     } catch (error) {
       toast.error(`Error loading accounts: ${error}`);
+    }
+  };
+
+  const loadMemberAuthStatus = async () => {
+    try {
+      const members = await window.api.security.getMemberAuthStatus();
+      setMemberAuthStatus(members);
+    } catch {
+      // May fail if no users exist yet
     }
   };
 
@@ -307,7 +360,18 @@ const App: React.FC = () => {
   };
 
   const handleNavigate = (view: string, accountId?: string) => {
-    setActiveView(view as ViewType);
+    if (view === 'import') {
+      setActiveView('transactions');
+      setTransactionsTab('import');
+    } else if (view === 'review-queue') {
+      setActiveView('transactions');
+      setTransactionsTab('review');
+    } else if (view === 'rules') {
+      setActiveView('settings');
+      setSettingsTab('rules');
+    } else {
+      setActiveView(view as ViewType);
+    }
     if (accountId) {
       setSelectedAccountId(accountId);
     }
@@ -450,34 +514,29 @@ const App: React.FC = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const navItems = [
-    { id: 'dashboard', label: 'Dashboard', icon: '\u{1F4CA}' },
-    { id: 'import', label: 'Import', icon: '\u{1F4E5}' },
-    { id: 'transactions', label: 'Transactions', icon: '\u{1F4DD}' },
-    { id: 'budgets', label: 'Budgets', icon: '\u{1F4B0}' },
-    { id: 'recurring', label: 'Recurring', icon: '\u{1F504}' },
-    { id: 'savings', label: 'Savings', icon: '\u{1F3AF}' },
-    { id: 'networth', label: 'Net Worth', icon: '\u{1F4B8}' },
-    { id: 'investments', label: 'Investments', icon: '\u{1F4C8}' },
-    { id: 'insights', label: 'Insights', icon: '\u{1F4A1}' },
-    { id: 'rules', label: 'Rules', icon: '\u{2699}' },
-    { id: 'settings', label: 'Settings', icon: '\u{2699}\u{FE0F}' },
-    { id: 'reports', label: 'Reports', icon: '\u{1F4C8}' },
+  const transactionsTabs = [
+    { id: 'list', label: 'Transactions' },
+    { id: 'import', label: 'Import' },
+    { id: 'review', label: 'Review' },
   ] as const;
 
-  const reportTabs = [
-    { id: 'spending', label: 'Spending by Category' },
-    { id: 'income-vs-expenses', label: 'Income vs Expenses' },
-    { id: 'trends', label: 'Category Trends' },
-    { id: 'cashflow', label: 'Cash Flow Forecast' },
-    { id: 'category-forecast', label: 'Category Predictions' },
-    { id: 'income-analysis', label: 'Income Analysis' },
+  const settingsTabs = [
+    { id: 'general', label: 'General' },
+    { id: 'categories', label: 'Categories' },
+    { id: 'rules', label: 'Rules' },
+    { id: 'household', label: 'Household' },
+    { id: 'security', label: 'Security' },
+    { id: 'data', label: 'Data' },
   ] as const;
-
 
   const investmentTabs = [
     { id: 'holdings', label: 'Holdings' },
     { id: 'performance', label: 'Performance' },
+  ] as const;
+
+  const recurringTabs = [
+    { id: 'items', label: 'Recurring Items' },
+    { id: 'calendar', label: 'Bill Calendar' },
   ] as const;
 
   // Startup lock screen — render only the lock screen, no app chrome
@@ -494,6 +553,8 @@ const App: React.FC = () => {
             // so we redirect this lock window or it gets closed by main
             window.close();
           }}
+          members={memberAuthStatus}
+          onMemberUnlock={(userId) => household.setCurrentUserId(userId)}
         />
       </ThemeProvider>
       </QueryClientProvider>
@@ -504,11 +565,14 @@ const App: React.FC = () => {
     <QueryClientProvider client={queryClient}>
     <ThemeProvider>
     <div className="app">
+
       {/* In-session lock overlay */}
       {isLocked && !isStartupLock && (
         <LockScreen
           isStartup={false}
           onUnlock={() => setIsLocked(false)}
+          members={memberAuthStatus}
+          onMemberUnlock={(userId) => household.setCurrentUserId(userId)}
         />
       )}
 
@@ -526,37 +590,12 @@ const App: React.FC = () => {
         />
       )}
 
-      <header className="app-header">
-        <div className="app-header-content">
-          <h1>Ledgr</h1>
-          <p>Budget smarter, stress less.</p>
-        </div>
-        <ThemeToggle />
-      </header>
-
-      <nav className="nav-tabs">
-        {navItems.map((item) => (
-          <button
-            key={item.id}
-            onClick={(e) => {
-              if (e.shiftKey) {
-                window.api.window.openNewWindow(item.id);
-              } else {
-                setActiveView(item.id);
-              }
-            }}
-            onContextMenu={(e) => {
-              e.preventDefault();
-              window.api.window.openNewWindow(item.id);
-            }}
-            className={`nav-tab ${activeView === item.id ? 'nav-tab--active' : ''}`}
-            title="Shift+Click or right-click to open in new window"
-          >
-            <span className="nav-tab-icon">{item.icon}</span>
-            {item.label}
-          </button>
-        ))}
-      </nav>
+      <Sidebar
+        activeView={activeView}
+        onNavigate={(view) => setActiveView(view as ViewType)}
+        onOpenNewWindow={(view) => window.api.window.openNewWindow(view)}
+        onLock={() => setIsLocked(true)}
+      />
 
       <div className="app-content" ref={contentRef}>
       <div className="section">
@@ -575,10 +614,12 @@ const App: React.FC = () => {
               onChange={(e) => setSelectedAccountId(e.target.value)}
               disabled={loading}
             >
-              {accounts.map((account) => (
+              {household.filterByOwnership(accounts)
+                .map((account) => (
                 <option key={account.id} value={account.id}>
                   {account.id === defaultAccountId ? '\u2605 ' : ''}{account.ofxUrl ? '\u{1F517} ' : ''}
                   {account.name} - {account.institution} (${(account.balance / 100).toFixed(2)})
+                  {household.users.length > 1 && account.ownerId ? ` [${household.users.find(u => u.id === account.ownerId)?.name ?? 'Unknown'}]` : ''}
                   {account.lastSynced ? ` - Last synced: ${new Date(account.lastSynced).toLocaleString()}` : ''}
                 </option>
               ))}
@@ -661,6 +702,25 @@ const App: React.FC = () => {
                 </button>
               </>
             )}
+            {selectedAccountId && household.users.length > 1 && (
+              <div style={{ marginTop: '8px', display: 'flex', alignItems: 'center', gap: '10px' }}>
+                <label style={{ fontSize: '0.85em', color: 'var(--color-text-muted)' }}>Owner:</label>
+                <select
+                  value={accounts.find(a => a.id === selectedAccountId)?.ownerId || ''}
+                  onChange={async (e) => {
+                    const ownerId = e.target.value || null;
+                    await window.api.accounts.update(selectedAccountId, { ownerId });
+                    await loadAccounts();
+                  }}
+                  style={{ fontSize: '0.85em', padding: '2px 6px' }}
+                >
+                  <option value="">Shared (Household)</option>
+                  {household.users.map(u => (
+                    <option key={u.id} value={u.id}>{u.name}</option>
+                  ))}
+                </select>
+              </div>
+            )}
             <div style={{ marginTop: '10px', fontSize: '0.85em', color: 'var(--color-text-muted)' }}>
               {selectedAccountId && accounts.find(a => a.id === selectedAccountId)?.ofxUrl ? (
                 <span style={{ color: 'var(--color-success)' }}>
@@ -739,167 +799,176 @@ const App: React.FC = () => {
 
       {activeView === 'dashboard' && <Dashboard onNavigate={handleNavigate} />}
 
-      {activeView === 'import' && (
-        <div className="section" style={{ marginTop: '20px' }}>
-          <h2>Import Transactions</h2>
-
-          <div style={{ marginBottom: '20px' }}>
-            <h3>Option 1: Import from CSV (with Preview)</h3>
-            <button
-              onClick={() => setShowTransactionImport(true)}
-              disabled={loading || !selectedAccountId}
-              className="btn btn-primary"
-              data-testid="import-wizard-button"
-            >
-              Import CSV File
-            </button>
-            <p style={{ marginTop: '8px', fontSize: '0.85em', color: 'var(--color-text-muted)' }}>
-              Preview transactions before importing, with manual column mapping support.
-            </p>
-          </div>
-
-          <div style={{ marginBottom: '20px', paddingTop: '10px', borderTop: '1px solid var(--color-border)' }}>
-            <h3>Option 2: Quick Import (OFX/QFX)</h3>
-            <button
-              onClick={handleImport}
-              disabled={loading || !selectedAccountId}
-              className="btn btn-secondary"
-              data-testid="import-button"
-            >
-              {loading ? 'Importing...' : 'Import OFX/QFX File'}
-            </button>
-            <p style={{ marginTop: '8px', fontSize: '0.85em', color: 'var(--color-text-muted)' }}>
-              Direct import without preview for bank-exported OFX/QFX files.
-            </p>
-          </div>
-
-          <div style={{ borderTop: '1px solid var(--color-border)', paddingTop: '20px' }}>
-            <h3>Option 2: Connect Bank (OFX Direct Connect)</h3>
-            <button
-              onClick={() => setShowOFXWizard(true)}
-              disabled={loading}
-              className="btn btn-primary"
-              data-testid="ofx-connect-button"
-            >
-              Connect Bank
-            </button>
-            <p style={{ marginTop: '10px', fontSize: '0.9em', color: 'var(--color-text-muted)' }}>
-              Connect directly to your bank - no third-party data aggregators.
-              Your credentials are sent directly to your bank.
-            </p>
-          </div>
-
-          {selectedAccountId && accounts.find(a => a.id === selectedAccountId)?.ofxUrl && (
-            <div style={{ borderTop: '1px solid var(--color-border)', paddingTop: '20px', marginTop: '20px' }}>
-              <h3>Sync Account</h3>
-              {!showSyncModal ? (
-                <button
-                  onClick={() => setShowSyncModal(true)}
-                  disabled={loading}
-                  className="btn btn-success"
-                  data-testid="sync-button"
-                >
-                  Sync Transactions
-                </button>
-              ) : (
-                <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
-                  <input
-                    type="password"
-                    placeholder="Enter your banking password"
-                    value={syncPassword}
-                    onChange={(e) => setSyncPassword(e.target.value)}
-                    disabled={loading}
-                    style={{ flex: 1 }}
-                  />
-                  <button
-                    onClick={handleSyncAccount}
-                    disabled={loading || !syncPassword}
-                    className="btn btn-success"
-                  >
-                    {loading ? 'Syncing...' : 'Sync'}
-                  </button>
-                  <button
-                    onClick={() => { setShowSyncModal(false); setSyncPassword(''); }}
-                    disabled={loading}
-                    className="btn btn-secondary"
-                  >
-                    Cancel
-                  </button>
-                </div>
-              )}
-              <p style={{ marginTop: '10px', fontSize: '0.9em', color: 'var(--color-text-muted)' }}>
-                Enter your online banking password to sync transactions.
-                Your password is sent directly to your bank and is not stored.
-              </p>
-            </div>
-          )}
-        </div>
-      )}
-
       {activeView === 'transactions' && (
         <div className="section" style={{ marginTop: '20px' }}>
-          <h2>Transactions</h2>
-          <TransactionList accountId={selectedAccountId} />
-        </div>
-      )}
-
-      {activeView === 'reports' && (
-        <div className="section" style={{ marginTop: '20px' }}>
           <div className="report-tabs">
-            {reportTabs.map((tab) => (
+            {transactionsTabs.map((tab) => (
               <button
                 key={tab.id}
-                onClick={() => setReportType(tab.id)}
-                className={`report-tab ${reportType === tab.id ? 'report-tab--active' : ''}`}
+                onClick={() => setTransactionsTab(tab.id)}
+                className={`report-tab ${transactionsTab === tab.id ? 'report-tab--active' : ''}`}
               >
                 {tab.label}
               </button>
             ))}
           </div>
-          {reportType === 'spending' && <SpendingVisualization />}
-          {reportType === 'income-vs-expenses' && <IncomeVsExpenses />}
-          {reportType === 'trends' && <CategoryTrends />}
-          {reportType === 'cashflow' && <CashFlowForecast />}
-          {reportType === 'category-forecast' && <CategoryForecast />}
-          {reportType === 'income-analysis' && <IncomeAnalysis />}
+          {transactionsTab === 'list' && (
+            <TransactionList accountId={selectedAccountId} />
+          )}
+          {transactionsTab === 'import' && (
+            <>
+              <h2>Import Transactions</h2>
+              <BankExportGuide />
+
+              <div style={{ marginBottom: '20px' }}>
+                <h3>Option 1: Import from CSV (with Preview)</h3>
+                <button
+                  onClick={() => setShowTransactionImport(true)}
+                  disabled={loading || !selectedAccountId}
+                  className="btn btn-primary"
+                  data-testid="import-wizard-button"
+                >
+                  Import CSV File
+                </button>
+                <p style={{ marginTop: '8px', fontSize: '0.85em', color: 'var(--color-text-muted)' }}>
+                  Preview transactions before importing, with manual column mapping support.
+                </p>
+              </div>
+
+              <div style={{ marginBottom: '20px', paddingTop: '10px', borderTop: '1px solid var(--color-border)' }}>
+                <h3>Option 2: Quick Import (OFX/QFX)</h3>
+                <button
+                  onClick={handleImport}
+                  disabled={loading || !selectedAccountId}
+                  className="btn btn-secondary"
+                  data-testid="import-button"
+                >
+                  {loading ? 'Importing...' : 'Import OFX/QFX File'}
+                </button>
+                <p style={{ marginTop: '8px', fontSize: '0.85em', color: 'var(--color-text-muted)' }}>
+                  Direct import without preview for bank-exported OFX/QFX files.
+                </p>
+              </div>
+
+              <div style={{ borderTop: '1px solid var(--color-border)', paddingTop: '20px' }}>
+                <h3>Option 3: Connect Bank (OFX Direct Connect)</h3>
+                <button
+                  onClick={() => setShowOFXWizard(true)}
+                  disabled={loading}
+                  className="btn btn-primary"
+                  data-testid="ofx-connect-button"
+                >
+                  Connect Bank
+                </button>
+                <p style={{ marginTop: '10px', fontSize: '0.9em', color: 'var(--color-text-muted)' }}>
+                  Connect directly to your bank - no third-party data aggregators.
+                  Your credentials are sent directly to your bank.
+                </p>
+              </div>
+
+              {selectedAccountId && accounts.find(a => a.id === selectedAccountId)?.ofxUrl && (
+                <div style={{ borderTop: '1px solid var(--color-border)', paddingTop: '20px', marginTop: '20px' }}>
+                  <h3>Sync Account</h3>
+                  {!showSyncModal ? (
+                    <button
+                      onClick={() => setShowSyncModal(true)}
+                      disabled={loading}
+                      className="btn btn-success"
+                      data-testid="sync-button"
+                    >
+                      Sync Transactions
+                    </button>
+                  ) : (
+                    <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
+                      <input
+                        type="password"
+                        placeholder="Enter your banking password"
+                        value={syncPassword}
+                        onChange={(e) => setSyncPassword(e.target.value)}
+                        disabled={loading}
+                        style={{ flex: 1 }}
+                      />
+                      <button
+                        onClick={handleSyncAccount}
+                        disabled={loading || !syncPassword}
+                        className="btn btn-success"
+                      >
+                        {loading ? 'Syncing...' : 'Sync'}
+                      </button>
+                      <button
+                        onClick={() => { setShowSyncModal(false); setSyncPassword(''); }}
+                        disabled={loading}
+                        className="btn btn-secondary"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  )}
+                  <p style={{ marginTop: '10px', fontSize: '0.9em', color: 'var(--color-text-muted)' }}>
+                    Enter your online banking password to sync transactions.
+                    Your password is sent directly to your bank and is not stored.
+                  </p>
+                </div>
+              )}
+            </>
+          )}
+          {transactionsTab === 'review' && (
+            <TransactionReviewQueue />
+          )}
         </div>
       )}
 
-      {activeView === 'insights' && (
+      {activeView === 'analytics' && (
         <div className="section" style={{ marginTop: '20px' }}>
-          <InsightsLanding onSelectTool={(tool) => setInsightType(tool)} activeToolId={insightType} />
-          {insightType === 'recovery' && (
+          <AnalyticsLanding onSelectTool={setAnalyticsToolId} activeToolId={analyticsToolId} />
+          {analyticsToolId === 'spending' && <SpendingVisualization />}
+          {analyticsToolId === 'income-vs-expenses' && <IncomeVsExpenses />}
+          {analyticsToolId === 'trends' && <CategoryTrends />}
+          {analyticsToolId === 'cashflow' && <CashFlowForecast />}
+          {analyticsToolId === 'category-forecast' && <CategoryForecast />}
+          {analyticsToolId === 'income-analysis' && <IncomeAnalysis />}
+          {analyticsToolId === 'month-review' && <MonthInReview />}
+          {analyticsToolId === 'year-review' && <YearInReview />}
+          {analyticsToolId === 'recovery' && (
             <RecoveryPlan
-              onNavigateToEmergency={() => setInsightType('emergency')}
-              onNavigateToSimulator={() => setInsightType('simulator')}
+              onNavigateToEmergency={() => setAnalyticsToolId('emergency')}
+              onNavigateToSimulator={() => setAnalyticsToolId('simulator')}
             />
           )}
-          {insightType === 'simulator' && <WhatIfSimulator />}
-          {insightType === 'emergency' && <EmergencyMode />}
-          {insightType === 'anomalies' && <AnomalyAlerts />}
-          {insightType === 'seasonal' && <SeasonalPatterns />}
-          {insightType === 'income' && <IncomeAnalysis />}
-          {insightType === 'velocity' && <SpendingVelocity />}
-          {insightType === 'subscriptions' && <SubscriptionAudit />}
-          {insightType === 'health' && <FinancialHealthScore />}
-          {insightType === 'debt' && <DebtPayoff />}
-          {insightType === 'migration' && <CategoryMigration />}
-          {insightType === 'cashflow' && <BillCalendar />}
+          {analyticsToolId === 'simulator' && <WhatIfSimulator />}
+          {analyticsToolId === 'emergency' && <EmergencyMode />}
+          {analyticsToolId === 'anomalies' && <AnomalyAlerts />}
+          {analyticsToolId === 'seasonal' && <SeasonalPatterns />}
+          {analyticsToolId === 'velocity' && <SpendingVelocity />}
+          {analyticsToolId === 'subscriptions' && <SubscriptionAudit />}
+          {analyticsToolId === 'health' && <FinancialHealthScore />}
+          {analyticsToolId === 'debt' && <DebtPayoff />}
+          {analyticsToolId === 'migration' && <CategoryMigration />}
         </div>
       )}
 
       {activeView === 'recurring' && (
         <div className="section" style={{ marginTop: '20px' }}>
-          <RecurringItems />
-          <div style={{ marginTop: '32px' }}>
-            <RecurringSuggestions />
+          <div className="report-tabs">
+            {recurringTabs.map((tab) => (
+              <button
+                key={tab.id}
+                onClick={() => setRecurringTab(tab.id)}
+                className={`report-tab ${recurringTab === tab.id ? 'report-tab--active' : ''}`}
+              >
+                {tab.label}
+              </button>
+            ))}
           </div>
-        </div>
-      )}
-
-      {activeView === 'rules' && (
-        <div className="section" style={{ marginTop: '20px' }}>
-          <CategoryRules />
+          {recurringTab === 'items' && (
+            <>
+              <RecurringItems />
+              <div style={{ marginTop: '32px' }}>
+                <RecurringSuggestions />
+              </div>
+            </>
+          )}
+          {recurringTab === 'calendar' && <BillCalendar />}
         </div>
       )}
 
@@ -945,81 +1014,141 @@ const App: React.FC = () => {
         </div>
       )}
 
+      {activeView === 'privacy' && (
+        <div className="section" style={{ marginTop: '20px' }}>
+          <PrivacySettings
+            onToast={(message, type) => {
+              type === 'success' ? toast.success(message) : toast.error(message);
+            }}
+          />
+        </div>
+      )}
+
       {activeView === 'settings' && (
         <div className="section" style={{ marginTop: '20px' }}>
           <h2>Settings</h2>
-          <div style={{ marginBottom: '32px' }}>
+          <div className="report-tabs">
+            {settingsTabs.map((tab) => (
+              <button
+                key={tab.id}
+                onClick={() => setSettingsTab(tab.id)}
+                className={`report-tab ${settingsTab === tab.id ? 'report-tab--active' : ''}`}
+              >
+                {tab.label}
+              </button>
+            ))}
+          </div>
+          {settingsTab === 'general' && (
+            <>
+              <div style={{ marginTop: '32px' }}>
+                <h3>Updates</h3>
+                <button onClick={() => window.api.updater.checkForUpdates()} className="btn btn-secondary">
+                  Check for Updates
+                </button>
+              </div>
+              <div style={{ marginTop: '32px' }}>
+                <h3>Tutorials</h3>
+                <p style={{ color: 'var(--color-text-muted)', fontSize: '0.9rem', marginBottom: '12px' }}>
+                  Show tutorial guides again when visiting analytics tools.
+                </p>
+                <button
+                  onClick={async () => {
+                    await window.api.tutorials.resetAll();
+                    toast.success('Tutorials reset — they\'ll appear again on next visit');
+                  }}
+                  className="btn btn-secondary"
+                >
+                  Reset All Tutorials
+                </button>
+              </div>
+              <div style={{ marginTop: '32px' }}>
+                <h3>Legal</h3>
+                <div style={{ display: 'flex', gap: '16px', flexWrap: 'wrap' }}>
+                  <button
+                    onClick={() => window.api.shell.openExternal('https://github.com/jchilcher/ledgr/blob/main/PRIVACY.md')}
+                    className="btn-link"
+                    style={{ fontSize: '0.9rem', padding: 0 }}
+                  >
+                    Privacy Policy
+                  </button>
+                  <button
+                    onClick={() => window.api.shell.openExternal('https://github.com/jchilcher/ledgr/blob/main/TERMS.md')}
+                    className="btn-link"
+                    style={{ fontSize: '0.9rem', padding: 0 }}
+                  >
+                    Terms of Service
+                  </button>
+                  <button
+                    onClick={() => window.api.shell.openExternal('https://github.com/jchilcher/ledgr')}
+                    className="btn-link"
+                    style={{ fontSize: '0.9rem', padding: 0 }}
+                  >
+                    Source Code (AGPL-3.0)
+                  </button>
+                </div>
+              </div>
+              <div style={{ marginTop: '32px', borderTop: '1px solid var(--color-border)', paddingTop: '16px' }}>
+                <p style={{ color: 'var(--color-text-muted)', fontSize: '0.85rem', margin: 0 }}>
+                  Ledgr v{versionString}
+                </p>
+                <button
+                  onClick={() => setShowAboutDialog(true)}
+                  className="btn-link"
+                  style={{ fontSize: '0.85rem', padding: 0, marginTop: '4px' }}
+                >
+                  About Ledgr
+                </button>
+              </div>
+            </>
+          )}
+          {settingsTab === 'categories' && (
             <CategoryManager />
-          </div>
-          <div style={{ marginTop: '32px', marginBottom: '32px' }}>
-            <PasswordSettings
-              onToast={(message, type) => type === 'success' ? toast.success(message) : toast.error(message)}
+          )}
+          {settingsTab === 'rules' && (
+            <CategoryRules />
+          )}
+          {settingsTab === 'household' && (
+            <HouseholdSettings
+              onToast={(message, type) => {
+                type === 'success' ? toast.success(message) : toast.error(message);
+                household.refreshUsers();
+                loadMemberAuthStatus();
+              }}
             />
-          </div>
-          <div style={{ marginTop: '32px' }}>
-            <h3>Data Management</h3>
-            <p style={{ color: 'var(--color-text-muted)', fontSize: '0.9rem', marginBottom: '16px' }}>
-              Back up your database or restore from a previous backup.
-            </p>
-            <div style={{ display: 'flex', gap: '12px' }}>
-              <button onClick={handleExportDatabase} className="btn btn-secondary">
-                Export Database
-              </button>
-              <button onClick={handleImportDatabase} className="btn btn-secondary">
-                Import Database
-              </button>
-            </div>
-          </div>
-          <div style={{ marginTop: '32px' }}>
-            <h3>Data Export</h3>
-            <button onClick={() => setShowExportModal(true)} className="btn btn-secondary">
-              Export Data
-            </button>
-          </div>
-          <div style={{ marginTop: '32px' }}>
-            <h3>Updates</h3>
-            <button onClick={() => window.api.updater.checkForUpdates()} className="btn btn-secondary">
-              Check for Updates
-            </button>
-          </div>
-          <div style={{ marginTop: '32px' }}>
-            <h3>Legal</h3>
-            <div style={{ display: 'flex', gap: '16px', flexWrap: 'wrap' }}>
-              <button
-                onClick={() => window.api.shell.openExternal('https://github.com/jchilcher/ledgr/blob/main/PRIVACY.md')}
-                className="btn-link"
-                style={{ fontSize: '0.9rem', padding: 0 }}
-              >
-                Privacy Policy
-              </button>
-              <button
-                onClick={() => window.api.shell.openExternal('https://github.com/jchilcher/ledgr/blob/main/TERMS.md')}
-                className="btn-link"
-                style={{ fontSize: '0.9rem', padding: 0 }}
-              >
-                Terms of Service
-              </button>
-              <button
-                onClick={() => window.api.shell.openExternal('https://github.com/jchilcher/ledgr')}
-                className="btn-link"
-                style={{ fontSize: '0.9rem', padding: 0 }}
-              >
-                Source Code (AGPL-3.0)
-              </button>
-            </div>
-          </div>
-          <div style={{ marginTop: '32px', borderTop: '1px solid var(--color-border)', paddingTop: '16px' }}>
-            <p style={{ color: 'var(--color-text-muted)', fontSize: '0.85rem', margin: 0 }}>
-              Ledgr v{versionString}
-            </p>
-            <button
-              onClick={() => setShowAboutDialog(true)}
-              className="btn-link"
-              style={{ fontSize: '0.85rem', padding: 0, marginTop: '4px' }}
-            >
-              About Ledgr
-            </button>
-          </div>
+          )}
+          {settingsTab === 'security' && (
+            <PasswordSettings
+              currentUserId={household.currentUserId}
+              onToast={(message, type) => {
+                type === 'success' ? toast.success(message) : toast.error(message);
+                loadMemberAuthStatus();
+              }}
+            />
+          )}
+          {settingsTab === 'data' && (
+            <>
+              <div style={{ marginTop: '32px' }}>
+                <h3>Data Management</h3>
+                <p style={{ color: 'var(--color-text-muted)', fontSize: '0.9rem', marginBottom: '16px' }}>
+                  Back up your database or restore from a previous backup.
+                </p>
+                <div style={{ display: 'flex', gap: '12px' }}>
+                  <button onClick={handleExportDatabase} className="btn btn-secondary">
+                    Export Database
+                  </button>
+                  <button onClick={handleImportDatabase} className="btn btn-secondary">
+                    Import Database
+                  </button>
+                </div>
+              </div>
+              <div style={{ marginTop: '32px' }}>
+                <h3>Data Export</h3>
+                <button onClick={() => setShowExportModal(true)} className="btn btn-secondary">
+                  Export Data
+                </button>
+              </div>
+            </>
+          )}
         </div>
       )}
 
@@ -1046,6 +1175,13 @@ const App: React.FC = () => {
             toast.success('Transactions imported successfully!');
             loadAccounts();
           }}
+        />
+      )}
+
+      {showTutorial && (
+        <TutorialOverlay
+          toolId={showTutorial}
+          onDismiss={() => setShowTutorial(null)}
         />
       )}
 
@@ -1127,5 +1263,11 @@ const App: React.FC = () => {
     </QueryClientProvider>
   );
 };
+
+const App: React.FC = () => (
+  <HouseholdProvider>
+    <AppContent />
+  </HouseholdProvider>
+);
 
 export default App;

@@ -22,6 +22,6 @@
       "@/*": ["src/*"]
     }
   },
-  "include": ["src/main/**/*", "src/shared/**/*"],
+  "include": ["src/main/**/*", "src/shared/**/*", "src/scripts/**/*"],
   "exclude": ["node_modules", "dist"]
 }

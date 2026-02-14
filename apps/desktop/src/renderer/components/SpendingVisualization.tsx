@@ -1,6 +1,8 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { PieChart, Pie, BarChart, Bar, Cell, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
 import { BudgetGoal } from '../../shared/types';
+import ChartExportButton from './ChartExportButton';
+import { useHousehold } from '../contexts/HouseholdContext';
 
 interface SpendingData {
   categoryId: string;
@@ -107,6 +109,8 @@ const formatDateShort = (d: Date): string => {
 const toDateString = (d: Date): string => d.toISOString().split('T')[0];
 
 const SpendingVisualization: React.FC = () => {
+  const { householdFilter } = useHousehold();
+  const chartRef = useRef<HTMLDivElement>(null);
   const [chartType, setChartType] = useState<ChartType>('pie');
   const [spendingData, setSpendingData] = useState<SpendingData[]>([]);
   const [datePreset, setDatePreset] = useState<DatePreset>('this-month');
@@ -414,7 +418,7 @@ const SpendingVisualization: React.FC = () => {
   useEffect(() => {
     loadData();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [datePreset, startDate, endDate, showComparison]);
+  }, [datePreset, startDate, endDate, showComparison, householdFilter]);
 
   const handlePresetChange = (preset: DatePreset) => {
     setDatePreset(preset);
@@ -565,6 +569,10 @@ const SpendingVisualization: React.FC = () => {
           data-interactive="true"
           style={{ marginBottom: '20px' }}
         >
+          <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: '8px' }}>
+            <ChartExportButton chartRef={chartRef} filename="spending-chart" />
+          </div>
+          <div ref={chartRef}>
           <ResponsiveContainer width="100%" height={400}>
             {chartType === 'pie' ? (
               <PieChart>
@@ -599,6 +607,7 @@ const SpendingVisualization: React.FC = () => {
               </BarChart>
             )}
           </ResponsiveContainer>
+          </div>
 
           {/* Weekly context header */}
           {weeklyContext && (
