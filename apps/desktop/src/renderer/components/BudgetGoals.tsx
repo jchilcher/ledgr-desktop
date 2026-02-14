@@ -1003,9 +1003,9 @@ export default function BudgetGoals() {
 
             {fixedCategories.length === 0 ? (
               <p style={{ color: 'var(--color-text-muted)', fontSize: '14px', margin: 0 }}>
-                No fixed expense categories selected. Click "Manage" to tag categories as fixed.
+                No fixed expense categories selected. Click &quot;Manage&quot; to tag categories as fixed.
                 {recurringItems.length > 0 && (
-                  <> You have recurring items that could be used — click "Manage" to select their categories.</>
+                  <> You have recurring items that could be used — click &quot;Manage&quot; to select their categories.</>
                 )}
               </p>
             ) : (
@@ -1309,7 +1309,7 @@ export default function BudgetGoals() {
                   // Orphan children
                   const parentIds = new Set(parentCats.map(c => c.id));
                   for (const cat of availableCategories) {
-                    if (cat.parentId && !parentIds.has(cat.parentId) && !opts.some((o: any) => o?.key === cat.id)) {
+                    if (cat.parentId && !parentIds.has(cat.parentId) && !opts.some((o) => React.isValidElement(o) && o.key === cat.id)) {
                       opts.push(
                         <option key={cat.id} value={cat.id}>
                           {cat.icon} {cat.name}

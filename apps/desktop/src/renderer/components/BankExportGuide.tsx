@@ -182,10 +182,10 @@ const BankExportGuide: React.FC = () => {
               </button>
               {expandedBank === 'other' && (
                 <ol className="bank-guide-steps">
-                  <li>Log in to your bank's website</li>
-                  <li>Navigate to your account's transaction history</li>
-                  <li>Look for a "Download", "Export", or arrow icon</li>
-                  <li>Select "CSV" or "Excel" as the format</li>
+                  <li>Log in to your bank&apos;s website</li>
+                  <li>Navigate to your account&apos;s transaction history</li>
+                  <li>Look for a &quot;Download&quot;, &quot;Export&quot;, or arrow icon</li>
+                  <li>Select &quot;CSV&quot; or &quot;Excel&quot; as the format</li>
                   <li>Choose your desired date range and download</li>
                 </ol>
               )}
