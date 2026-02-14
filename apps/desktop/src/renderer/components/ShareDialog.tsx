@@ -137,7 +137,7 @@ export default function ShareDialog({ entityId, entityType, entityName, onClose,
         <div style={{ padding: '24px' }}>
           {/* Header */}
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
-            <h3 style={{ margin: 0 }}>Share "{entityName}"</h3>
+            <h3 style={{ margin: 0 }}>Share &quot;{entityName}&quot;</h3>
             <button
               onClick={onClose}
               style={{
