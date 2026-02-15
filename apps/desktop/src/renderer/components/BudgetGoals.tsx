@@ -3,6 +3,7 @@ import { BudgetGoal, BudgetPeriod, BudgetMode, Category, BudgetSuggestion, Recur
 import { useInlineEdit } from '../hooks/useInlineEdit';
 import { EditableNumber, EditableSelect, EditableCheckbox } from './inline-edit';
 import EmptyState from './EmptyState';
+import PaycheckBudgeting from './PaycheckBudgeting';
 
 const PERIOD_OPTIONS = [
   { value: 'weekly', label: 'Weekly' },
@@ -38,7 +39,7 @@ export default function BudgetGoals() {
   const [incomeEditValue, setIncomeEditValue] = useState('');
 
   // Flex budget state
-  const [budgetMode, setBudgetMode] = useState<BudgetMode>('category');
+  const [budgetMode, setBudgetMode] = useState<BudgetMode | 'paycheck'>('category');
   const [flexTarget, setFlexTarget] = useState(0);
   const [fixedCategoryIds, setFixedCategoryIds] = useState<string[]>([]);
   const [recurringItems, setRecurringItems] = useState<RecurringItem[]>([]);
@@ -427,9 +428,11 @@ export default function BudgetGoals() {
     return result;
   }, [categories, childrenByParent]);
 
-  const handleModeChange = async (mode: BudgetMode) => {
+  const handleModeChange = async (mode: BudgetMode | 'paycheck') => {
     setBudgetMode(mode);
-    await window.api.budgetSettings.setMode(mode);
+    if (mode === 'category' || mode === 'flex') {
+      await window.api.budgetSettings.setMode(mode);
+    }
   };
 
   const handleSaveFlexTarget = async (value: string) => {
@@ -877,6 +880,21 @@ export default function BudgetGoals() {
             >
               Flex Budget
             </button>
+            <button
+              onClick={() => handleModeChange('paycheck')}
+              style={{
+                padding: '6px 14px',
+                fontSize: '13px',
+                fontWeight: 500,
+                border: 'none',
+                borderLeft: '1px solid var(--color-border)',
+                cursor: 'pointer',
+                backgroundColor: budgetMode === 'paycheck' ? 'var(--color-primary)' : 'var(--color-surface)',
+                color: budgetMode === 'paycheck' ? '#fff' : 'var(--color-text)',
+              }}
+            >
+              Paycheck
+            </button>
           </div>
           {budgetMode === 'category' && (
             <button
@@ -976,7 +994,10 @@ export default function BudgetGoals() {
         </div>
       )}
 
-      {budgetMode === 'flex' ? (
+      {budgetMode === 'paycheck' ? (
+        /* ==================== Paycheck Budget View ==================== */
+        <PaycheckBudgeting />
+      ) : budgetMode === 'flex' ? (
         /* ==================== Flex Budget View ==================== */
         <div>
           {/* Fixed Expenses Section */}

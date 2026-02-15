@@ -250,7 +250,7 @@ if (!gotTheLock) {
   function initializeApp(dbPathArg: string): void {
     // Initialize database
     updateSplashStatus('Loading database...');
-    database = new BudgetDatabase(dbPathArg);
+    database = BudgetDatabase.createWithSafetyNet(dbPathArg, app.getVersion());
 
     // Migrate data from legacy database locations if current db is empty
     updateSplashStatus('Checking for data migration...');
@@ -325,6 +325,8 @@ if (!gotTheLock) {
         }
       }
       // User has no password, or password verified — unlock
+      ipcHandlers!.setCurrentUserId(userId);
+      ipcHandlers!.setLocked(false);
 
       // Create the main window
       createWindow();
@@ -332,7 +334,7 @@ if (!gotTheLock) {
       // Remove the one-time handler
       ipcMain.removeHandler('security:unlockMemberStartup');
 
-      return true;
+      return userId;
     });
 
     // Show lock window for member selection
@@ -341,7 +343,10 @@ if (!gotTheLock) {
       // Lock window is now showing
     });
   } else {
-    // No member passwords — proceed normally
+    // No member passwords — default to first user so currentUserId is set
+    const defaultUser = database!.getDefaultUser();
+    ipcHandlers!.setCurrentUserId(defaultUser.id);
+
     updateSplashStatus('Loading interface...');
     const mainWindow = createWindow();
 

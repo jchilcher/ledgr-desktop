@@ -45,6 +45,28 @@ export const HouseholdProvider: React.FC<HouseholdProviderProps> = ({ children }
     }
   }, [users, currentUserId]);
 
+  // Sync auth state from main process (covers startup unlock in a separate window)
+  useEffect(() => {
+    if (users.length > 0 && !currentUserId) {
+      (async () => {
+        try {
+          const mainUserId = await window.api.security.getCurrentUser();
+          if (mainUserId) {
+            setCurrentUserIdState(mainUserId);
+            setHouseholdFilter(mainUserId);
+          } else if (users.length > 0) {
+            // Fallback: select the default user when main process hasn't set one yet
+            const defaultUser = users.find(u => u.isDefault) || users[0];
+            setCurrentUserIdState(defaultUser.id);
+            setHouseholdFilter(defaultUser.id);
+          }
+        } catch {
+          // getCurrentUser may not be available yet
+        }
+      })();
+    }
+  }, [users, currentUserId]);
+
   // Load shared entity IDs for current user
   useEffect(() => {
     if (!currentUserId) {

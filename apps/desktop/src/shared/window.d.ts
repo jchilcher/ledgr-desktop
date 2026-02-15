@@ -52,9 +52,17 @@ import {
   User,
   TransactionAttachment,
   EncryptableEntityType,
+  SharingEntityType,
   SharePermissions,
   DataShare,
   SharingDefault,
+  SafeToSpendResult,
+  AgeOfMoneyResult,
+  TaxLotReport,
+  EnhancedCategoryRule,
+  AutomationRuleAction,
+  PaycheckAllocation,
+  PaycheckBudgetView,
 } from './types';
 
 import type {
@@ -984,6 +992,7 @@ export interface API {
         weight: number;
         status: 'excellent' | 'good' | 'fair' | 'poor';
         recommendation?: string;
+        metric?: { currentValue: string; targetValue: string; unit: string };
       }>;
       recommendations: string[];
       trend: 'improving' | 'stable' | 'declining';
@@ -1749,7 +1758,8 @@ export interface API {
     disableMemberPassword: (userId: string, currentPassword: string) => Promise<void>;
     changeMemberPassword: (userId: string, oldPassword: string, newPassword: string) => Promise<void>;
     unlockMember: (userId: string, password: string | null) => Promise<boolean>;
-    unlockMemberStartup: (userId: string, password: string | null) => Promise<boolean>;
+    unlockMemberStartup: (userId: string, password: string | null) => Promise<string | false>;
+    getCurrentUser: () => Promise<string | null>;
     onLock: (callback: () => void) => () => void;
     onUnlock: (callback: () => void) => () => void;
   };
@@ -1828,8 +1838,55 @@ export interface API {
     getSharesForEntity: (entityId: string, entityType: EncryptableEntityType) => Promise<DataShare[]>;
     getSharedWithMe: () => Promise<DataShare[]>;
     getDefaults: (ownerId: string, entityType?: EncryptableEntityType) => Promise<SharingDefault[]>;
-    setDefault: (ownerId: string, recipientId: string, entityType: EncryptableEntityType, permissions: SharePermissions) => Promise<SharingDefault>;
+    setDefault: (ownerId: string, recipientId: string, entityType: SharingEntityType, permissions: SharePermissions) => Promise<SharingDefault>;
+    updateDefault: (defaultId: string, updates: { entityType?: SharingEntityType; permissions?: SharePermissions }) => Promise<boolean>;
     removeDefault: (defaultId: string) => Promise<boolean>;
+  };
+
+  // ==================== Safe to Spend ====================
+  safeToSpend: {
+    calculate: () => Promise<SafeToSpendResult>;
+  };
+
+  // ==================== Age of Money ====================
+  ageOfMoney: {
+    calculate: () => Promise<AgeOfMoneyResult>;
+  };
+
+  // ==================== Tax Lot Reports ====================
+  taxLotReport: {
+    generate: (taxYear: number) => Promise<TaxLotReport>;
+    exportCSV: (taxYear: number) => Promise<{ success: boolean; filePath?: string; error?: string }>;
+  };
+
+  // ==================== Enhanced Automation Rules ====================
+  automationActions: {
+    getForRule: (ruleId: string) => Promise<AutomationRuleAction[]>;
+    create: (action: { ruleId: string; actionType: string; actionValue: string | null }) => Promise<AutomationRuleAction>;
+    delete: (id: string) => Promise<boolean>;
+    getEnhancedRules: () => Promise<EnhancedCategoryRule[]>;
+    updateRuleConditions: (id: string, conditions: {
+      amountMin?: number | null;
+      amountMax?: number | null;
+      accountFilter?: string[] | null;
+      directionFilter?: 'income' | 'expense' | null;
+    }) => Promise<boolean>;
+  };
+
+  // ==================== Paycheck-Based Budgeting ====================
+  paycheckAllocations: {
+    getAll: () => Promise<PaycheckAllocation[]>;
+    getByStream: (incomeStreamId: string) => Promise<PaycheckAllocation[]>;
+    create: (allocation: {
+      incomeStreamId: string;
+      incomeDescription: string;
+      allocationType: string;
+      targetId: string;
+      amount: number;
+    }) => Promise<PaycheckAllocation>;
+    update: (id: string, updates: { amount?: number }) => Promise<PaycheckAllocation | null>;
+    delete: (id: string) => Promise<boolean>;
+    getBudgetView: (incomeStreamId: string) => Promise<PaycheckBudgetView | null>;
   };
 }
 

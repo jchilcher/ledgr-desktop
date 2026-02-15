@@ -40,9 +40,10 @@ export default function LockScreen({ isStartup, onUnlock, members, onMemberUnloc
         const unlockFn = isStartup
           ? window.api.security.unlockMemberStartup
           : window.api.security.unlockMember;
-        const success = await unlockFn(member.userId, null);
-        if (success) {
-          onMemberUnlock?.(member.userId);
+        const result = await unlockFn(member.userId, null);
+        if (result) {
+          const resolvedId = typeof result === 'string' ? result : member.userId;
+          onMemberUnlock?.(resolvedId);
           onUnlock();
         } else {
           setError('Failed to unlock. Please try again.');
@@ -66,9 +67,10 @@ export default function LockScreen({ isStartup, onUnlock, members, onMemberUnloc
       const unlockFn = isStartup
         ? window.api.security.unlockMemberStartup
         : window.api.security.unlockMember;
-      const success = await unlockFn(selectedMember.userId, null);
-      if (success) {
-        onMemberUnlock?.(selectedMember.userId);
+      const result = await unlockFn(selectedMember.userId, null);
+      if (result) {
+        const resolvedId = typeof result === 'string' ? result : selectedMember.userId;
+        onMemberUnlock?.(resolvedId);
         onUnlock();
       } else {
         setError('Failed to unlock. Please try again.');
@@ -102,9 +104,10 @@ export default function LockScreen({ isStartup, onUnlock, members, onMemberUnloc
       const unlockFn = isStartup
         ? window.api.security.unlockMemberStartup
         : window.api.security.unlockMember;
-      const success = await unlockFn(selectedMember.userId, password);
-      if (success) {
-        onMemberUnlock?.(selectedMember.userId);
+      const result = await unlockFn(selectedMember.userId, password);
+      if (result) {
+        const resolvedId = typeof result === 'string' ? result : selectedMember.userId;
+        onMemberUnlock?.(resolvedId);
         onUnlock();
       } else {
         setError('Incorrect password');

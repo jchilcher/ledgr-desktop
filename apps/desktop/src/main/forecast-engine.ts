@@ -1,4 +1,3 @@
-import { BudgetDatabase } from './database';
 import {
   ForecastEngine as CoreForecastEngine,
   DataPoint,
@@ -6,18 +5,25 @@ import {
   SpendingForecast,
   CategorySpendingForecast,
   excludeTransfers,
+  Transaction,
+  Category,
 } from '@ledgr/core';
 
 // Re-export types from core
 export { DataPoint, LinearRegressionResult, SpendingForecast, CategorySpendingForecast };
 
+interface ForecastEngineCallbacks {
+  getTransactions: () => Transaction[];
+  getCategories: () => Category[];
+}
+
 export class ForecastEngine {
   private coreEngine: CoreForecastEngine;
 
-  constructor(private db: BudgetDatabase) {
+  constructor(callbacks: ForecastEngineCallbacks) {
     this.coreEngine = new CoreForecastEngine({
-      getTransactions: () => excludeTransfers(this.db.getTransactions()),
-      getCategories: () => this.db.getCategories(),
+      getTransactions: () => excludeTransfers(callbacks.getTransactions()),
+      getCategories: callbacks.getCategories,
     });
   }
 

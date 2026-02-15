@@ -8,20 +8,28 @@ import {
   RecurringFrequency,
   RecurringTransaction,
 } from '@ledgr/core';
+import { decryptEntityList } from './encryption-middleware';
 
 // Re-export types from core
 export { ProjectedTransaction, CashFlowWarning, BalanceProjection, CashFlowForecast };
 
 export class CashFlowEngine {
   private coreEngine: CoreCashFlowEngine;
+  private currentUserId: string | null = null;
 
   constructor(private db: BudgetDatabase) {
     this.coreEngine = new CoreCashFlowEngine({
-      getAccountById: (id: string) => this.db.getAccountById(id),
+      getAccountById: (id: string) => {
+        const account = this.db.getAccountById(id);
+        if (!account) return account;
+        const [decrypted] = decryptEntityList(this.db, 'account', [account], this.currentUserId);
+        return decrypted || account;
+      },
       // Use the unified recurring_items table instead of legacy recurring_transactions
       // This ensures consistency with BillCalendar/CashFlowOptimizationEngine
       getRecurringTransactionsByAccount: (accountId: string): RecurringTransaction[] => {
-        const items = this.db.getRecurringItemsByAccount(accountId);
+        const rawItems = this.db.getRecurringItemsByAccount(accountId);
+        const items = decryptEntityList(this.db, 'recurring_item', rawItems, this.currentUserId);
         // Map RecurringItem to RecurringTransaction format
         return items
           .filter(item => item.isActive)
@@ -38,6 +46,10 @@ export class CashFlowEngine {
           }));
       },
     });
+  }
+
+  setCurrentUserId(userId: string | null): void {
+    this.currentUserId = userId;
   }
 
   /**

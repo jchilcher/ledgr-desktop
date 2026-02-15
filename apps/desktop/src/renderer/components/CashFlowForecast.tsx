@@ -13,10 +13,14 @@ import {
   ReferenceLine,
   Area,
   ComposedChart,
+  Line,
+  Legend,
 } from 'recharts';
 import ChartExportButton from './ChartExportButton';
 import SankeyDiagram from './SankeyDiagram';
+import WhatIfPanel from './WhatIfPanel';
 import { useHousehold } from '../contexts/HouseholdContext';
+import type { WhatIfProjectionPoint } from '../hooks/useWhatIfProjections';
 
 interface CashFlowProjection {
   date: string;
@@ -98,7 +102,11 @@ const EditableAmount: React.FC<EditableAmountProps> = ({
 
   const handleStartEdit = () => {
     const monthlyAmount = displayAmount / forecastMonths / 100;
-    setEditValue(monthlyAmount.toFixed(2));
+    if (isNaN(monthlyAmount)) {
+      setEditValue('0.00');
+    } else {
+      setEditValue(monthlyAmount.toFixed(2));
+    }
     setEditMode('monthly');
     setIsEditing(true);
   };
@@ -260,6 +268,9 @@ const CashFlowForecast: React.FC = () => {
   const [expandedRowDate, setExpandedRowDate] = useState<string | null>(null);
   // User overrides for category amounts (categoryId -> total amount for forecast period)
   const [categoryOverrides, setCategoryOverrides] = useState<Map<string, number>>(new Map());
+  // What-If Mode
+  const [whatIfActive, setWhatIfActive] = useState(false);
+  const [modifiedChartData, setModifiedChartData] = useState<WhatIfProjectionPoint[] | null>(null);
 
   const handleCategoryOverride = useCallback((categoryId: string, amount: number | undefined) => {
     setCategoryOverrides(prev => {
@@ -568,6 +579,7 @@ const CashFlowForecast: React.FC = () => {
   }, [accounts, selectedAccountId, forecastDays, includeCategoryTrends, selectedCategoryIds, loadForecast]);
 
   const formatCurrency = (amountInCents: number): string => {
+    if (amountInCents == null || isNaN(amountInCents)) return '$0.00';
     return new Intl.NumberFormat('en-US', {
       style: 'currency',
       currency: 'USD',
@@ -575,13 +587,14 @@ const CashFlowForecast: React.FC = () => {
   };
 
   const formatDate = (dateStr: string): string => {
-    const date = new Date(dateStr);
+    const [year, month, day] = dateStr.split('-').map(Number);
+    const date = new Date(year, month - 1, day);
     return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
   };
 
   const formatShortDate = (dateStr: string): string => {
-    const date = new Date(dateStr);
-    // For longer forecasts, show month/year
+    const [year, month, day] = dateStr.split('-').map(Number);
+    const date = new Date(year, month - 1, day);
     if (forecastDays > 365) {
       return date.toLocaleDateString('en-US', { month: 'short', year: '2-digit' });
     }
@@ -616,6 +629,16 @@ const CashFlowForecast: React.FC = () => {
   const sampledChartData = chartData.length > 100
     ? chartData.filter((_, i) => i === 0 || i === chartData.length - 1 || i % Math.ceil(chartData.length / 50) === 0)
     : chartData;
+
+  // Merge what-if modified projections into chart data
+  const chartDataWithWhatIf = React.useMemo(() => {
+    if (!modifiedChartData || modifiedChartData.length === 0) return sampledChartData;
+    const modMap = new Map(modifiedChartData.map(p => [p.date, p.modifiedBalance]));
+    return sampledChartData.map(point => ({
+      ...point,
+      modifiedBalance: point.date === 'Today' ? point.balance : (modMap.get(point.date) ?? undefined),
+    }));
+  }, [sampledChartData, modifiedChartData]);
 
   return (
     <div style={{ padding: '20px' }}>
@@ -903,7 +926,49 @@ const CashFlowForecast: React.FC = () => {
             )}
           </div>
         )}
+
+        {/* What-If Mode Toggle */}
+        <div style={{ display: 'flex', alignItems: 'center', paddingBottom: '4px' }}>
+          <button
+            onClick={() => {
+              setWhatIfActive(prev => {
+                if (prev) setModifiedChartData(null);
+                return !prev;
+              });
+            }}
+            style={{
+              padding: '8px 16px',
+              backgroundColor: whatIfActive ? 'var(--color-primary)' : 'var(--color-surface)',
+              color: whatIfActive ? 'white' : 'var(--color-text)',
+              border: whatIfActive ? '1px solid var(--color-primary)' : '1px solid var(--color-border)',
+              borderRadius: 'var(--radius-md)',
+              cursor: 'pointer',
+              fontWeight: 600,
+              fontSize: '13px',
+              transition: 'all 0.15s',
+            }}
+          >
+            {whatIfActive ? 'What-If: ON' : 'What-If Mode'}
+          </button>
+        </div>
       </div>
+
+      {/* What-If Panel */}
+      {whatIfActive && forecast && (
+        <WhatIfPanel
+          forecast={forecast}
+          categories={categories}
+          onProjectionsChange={setModifiedChartData}
+          onClose={() => {
+            setWhatIfActive(false);
+            setModifiedChartData(null);
+          }}
+          onForecastReload={() => {
+            setModifiedChartData(null);
+            loadForecast();
+          }}
+        />
+      )}
 
       {/* Info about granularity and confidence */}
       {forecast && (forecast.granularity || forecast.summary) && (
@@ -1333,7 +1398,7 @@ const CashFlowForecast: React.FC = () => {
               <div ref={chartRef}>
               <ResponsiveContainer width="100%" height={300}>
                 <ComposedChart
-                  data={sampledChartData}
+                  data={chartDataWithWhatIf}
                   margin={{ top: 10, right: 30, left: 10, bottom: 10 }}
                 >
                   <CartesianGrid strokeDasharray="3 3" stroke="var(--color-border)" />
@@ -1358,7 +1423,9 @@ const CashFlowForecast: React.FC = () => {
                     formatter={(value, name) => {
                       if (value === undefined || value === null) return ['N/A', name];
                       const numValue = typeof value === 'number' ? value : parseFloat(String(value));
-                      if (name === 'balance') return [formatCurrency(numValue), 'Projected'];
+                      if (isNaN(numValue)) return ['N/A', name];
+                      if (name === 'balance') return [formatCurrency(numValue), 'Original'];
+                      if (name === 'modifiedBalance') return [formatCurrency(numValue), 'What-If'];
                       if (name === 'balanceRange') return [formatCurrency(numValue), 'Range'];
                       return [formatCurrency(numValue), name];
                     }}
@@ -1395,7 +1462,33 @@ const CashFlowForecast: React.FC = () => {
                     stroke="var(--color-primary)"
                     fill="url(#balanceGradient)"
                     strokeWidth={2}
+                    name="balance"
                   />
+
+                  {/* What-If modified balance line */}
+                  {whatIfActive && modifiedChartData && (
+                    <Line
+                      type="monotone"
+                      dataKey="modifiedBalance"
+                      stroke="var(--color-success)"
+                      strokeWidth={2}
+                      strokeDasharray="6 3"
+                      dot={false}
+                      name="modifiedBalance"
+                      connectNulls
+                    />
+                  )}
+
+                  {/* Legend when what-if is active */}
+                  {whatIfActive && modifiedChartData && (
+                    <Legend
+                      formatter={(value) => {
+                        if (value === 'balance') return 'Original';
+                        if (value === 'modifiedBalance') return 'What-If';
+                        return value;
+                      }}
+                    />
+                  )}
                 </ComposedChart>
               </ResponsiveContainer>
               </div>

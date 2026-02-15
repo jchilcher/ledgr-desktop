@@ -23,7 +23,7 @@ import {
   applyBlanketShares,
   createAndStoreDEK,
 } from './encryption-middleware';
-import type { EncryptableEntityType, SharePermissions } from '../shared/types';
+import type { EncryptableEntityType, SharingEntityType, SharePermissions } from '../shared/types';
 import { selectImportFile as selectDatabaseImportFile, extractDatabaseMetadata, performDatabaseImport } from './database-import';
 import path from 'path';
 import {
@@ -66,8 +66,20 @@ import {
   LiabilityValueHistory,
   TransactionColumnMapping,
   TransactionImportPreviewRow,
+  AutomationRuleAction,
 } from '../shared/types';
-import { PriceService, PriceResult, excludeTransfers, NetWorthProjectionConfig } from '@ledgr/core';
+import {
+  PriceService,
+  PriceResult,
+  excludeTransfers,
+  NetWorthProjectionConfig,
+  SafeToSpendInput,
+  calculateSafeToSpend,
+  calculateAgeOfMoney,
+  generateTaxLotReport,
+  PaycheckBudgetEngine,
+  PaycheckBudgetViewInput,
+} from '@ledgr/core';
 import { priceStorage } from './storage/priceStorage';
 import { importTransactionsFromFile } from './import-handler';
 import { ExportHandler, ExportOptions } from './export-handler';
@@ -174,7 +186,10 @@ export class IPCHandlers {
 
   constructor(private db: BudgetDatabase) {
     isLockedRef = () => this.isLocked;
-    this.forecastEngine = new ForecastEngine(db);
+    this.forecastEngine = new ForecastEngine({
+      getTransactions: () => this.decryptTransactionsList(db.getTransactions()),
+      getCategories: () => db.getCategories(),
+    });
     this.cashFlowEngine = new CashFlowEngine(db);
     this.categorizationEngine = new CategorizationEngine(db);
     this.netWorthEngine = new NetWorthEngine(db);
@@ -182,37 +197,38 @@ export class IPCHandlers {
 
     // Phase 7 engines
     this.anomalyDetectionEngine = new AnomalyDetectionEngine({
-      getTransactions: () => excludeTransfers(db.getTransactions()),
-      getRecurringItems: () => db.getRecurringItems(),
+      getTransactions: () => this.decryptTransactionsList(excludeTransfers(db.getTransactions())),
+      getRecurringItems: () => decryptEntityList(this.db, 'recurring_item', db.getRecurringItems(), this.currentUserId) as RecurringItem[],
       getCategories: () => db.getCategories(),
     });
     this.seasonalAnalysisEngine = new SeasonalAnalysisEngine({
-      getTransactions: () => excludeTransfers(db.getTransactions()),
+      getTransactions: () => this.decryptTransactionsList(excludeTransfers(db.getTransactions())),
       getCategories: () => db.getCategories(),
     });
     this.incomeAnalysisEngine = new IncomeAnalysisEngine({
-      getTransactions: () => excludeTransfers(db.getTransactions()),
+      getTransactions: () => this.decryptTransactionsList(excludeTransfers(db.getTransactions())),
     });
     this.spendingVelocityEngine = new SpendingVelocityEngine({
-      getTransactions: () => excludeTransfers(db.getTransactions()),
+      getTransactions: () => this.decryptTransactionsList(excludeTransfers(db.getTransactions())),
       getBudgetGoals: () => db.getBudgetGoals(),
       getCategories: () => db.getCategories(),
     });
     this.comparisonEngine = new ComparisonEngine({
-      getTransactions: () => excludeTransfers(db.getTransactions()),
+      getTransactions: () => this.decryptTransactionsList(excludeTransfers(db.getTransactions())),
       getCategories: () => db.getCategories(),
       getBudgetGoals: () => db.getBudgetGoals(),
     });
     this.subscriptionAuditEngine = new SubscriptionAuditEngine({
-      getRecurringItems: () => db.getRecurringItems(),
+      getRecurringItems: () => decryptEntityList(this.db, 'recurring_item', db.getRecurringItems(), this.currentUserId) as RecurringItem[],
     });
     this.financialHealthEngine = new FinancialHealthEngine({
-      getTransactions: () => excludeTransfers(db.getTransactions()),
+      getTransactions: () => this.decryptTransactionsList(excludeTransfers(db.getTransactions())),
       getBudgetGoals: () => db.getBudgetGoals(),
-      getAssets: () => db.getAssets(),
+      getAssets: () => decryptEntityList(this.db, 'manual_asset', db.getAssets(), this.currentUserId),
       getLiabilities: () => {
         // Primary: manual_liabilities (Net Worth page - canonical source)
-        const manualLiabilities = db.getManualLiabilities().map(l => ({
+        const decryptedManualLiabilities = decryptEntityList(this.db, 'manual_liability', db.getManualLiabilities(), this.currentUserId);
+        const manualLiabilities = decryptedManualLiabilities.map(l => ({
           id: l.id,
           name: l.name,
           balance: l.balance,
@@ -225,20 +241,23 @@ export class IPCHandlers {
           .filter(l => !manualNames.has(l.name.toLowerCase()));
         return [...manualLiabilities, ...legacyLiabilities];
       },
-      getSavingsGoals: () => db.getSavingsGoals(),
+      getSavingsGoals: () => decryptEntityList(this.db, 'savings_goal', db.getSavingsGoals(), this.currentUserId) as SavingsGoal[],
       getNetWorthHistory: () => db.getNetWorthHistory().map(h => ({ date: h.date, netWorth: h.netWorth })),
     });
 
     // Phase 3: Goal & Debt Projection engines
     this.savingsProjectionEngine = new SavingsProjectionEngine({
-      getSavingsGoals: () => db.getSavingsGoals().map(g => ({
-        id: g.id,
-        name: g.name,
-        targetAmount: g.targetAmount,
-        currentAmount: g.currentAmount,
-        targetDate: g.targetDate,
-        monthlyContribution: 0, // Calculated from contribution history
-      })),
+      getSavingsGoals: () => {
+        const decryptedGoals = decryptEntityList(this.db, 'savings_goal', db.getSavingsGoals(), this.currentUserId);
+        return decryptedGoals.map(g => ({
+          id: g.id,
+          name: g.name,
+          targetAmount: g.targetAmount,
+          currentAmount: g.currentAmount,
+          targetDate: g.targetDate,
+          monthlyContribution: 0, // Calculated from contribution history
+        }));
+      },
       getSavingsContributions: (goalId: string) => db.getSavingsContributions(goalId).map(c => ({
         id: c.id,
         goalId: c.goalId,
@@ -249,7 +268,8 @@ export class IPCHandlers {
     this.debtPayoffEngine = new DebtPayoffEngine({
       getLiabilities: () => {
         // Primary: manual_liabilities (Net Worth page - canonical source)
-        const manualLiabilities = db.getManualLiabilities().map(l => ({
+        const decryptedManualLiabilities = decryptEntityList(this.db, 'manual_liability', db.getManualLiabilities(), this.currentUserId);
+        const manualLiabilities = decryptedManualLiabilities.map(l => ({
           id: l.id,
           name: l.name,
           balance: l.balance,
@@ -289,51 +309,62 @@ export class IPCHandlers {
 
     // Phase 4: Cash Flow Intelligence engines
     this.categoryMigrationEngine = new CategoryMigrationEngine({
-      getTransactions: () => excludeTransfers(db.getTransactions()).map(t => ({
-        id: t.id,
-        date: t.date,
-        amount: t.amount,
-        categoryId: t.categoryId ?? null,
-        type: t.amount >= 0 ? 'income' as const : 'expense' as const,
-      })),
+      getTransactions: () => {
+        const decryptedTxs = this.decryptTransactionsList(excludeTransfers(db.getTransactions()));
+        return decryptedTxs.map(t => ({
+          id: t.id,
+          date: t.date,
+          amount: t.amount,
+          categoryId: t.categoryId ?? null,
+          type: t.amount >= 0 ? 'income' as const : 'expense' as const,
+        }));
+      },
       getCategories: () => db.getCategories(),
     });
     this.cashFlowOptimizationEngine = new CashFlowOptimizationEngine({
-      getRecurringItems: () => db.getRecurringItems().map(item => ({
-        id: item.id,
-        name: item.description,
-        amount: item.amount,
-        frequency: item.frequency,
-        nextDueDate: item.nextOccurrence,
-        dayOfMonth: item.dayOfMonth,
-        isActive: item.isActive,
-        type: item.amount < 0 ? 'expense' as const : 'income' as const,
-        accountId: item.accountId,
-      })),
-      getAccounts: () => db.getAccounts(),
+      getRecurringItems: () => {
+        const decryptedItems = decryptEntityList(this.db, 'recurring_item', db.getRecurringItems(), this.currentUserId);
+        return decryptedItems.map(item => ({
+          id: item.id,
+          name: item.description,
+          amount: item.amount,
+          frequency: item.frequency,
+          nextDueDate: item.nextOccurrence,
+          dayOfMonth: item.dayOfMonth,
+          isActive: item.isActive,
+          type: item.amount < 0 ? 'expense' as const : 'income' as const,
+          accountId: item.accountId,
+        }));
+      },
+      getAccounts: () => decryptEntityList(this.db, 'account', db.getAccounts(), this.currentUserId) as Account[],
       getBillPreferences: () => db.getBillPreferences(),
     });
 
     // Enhanced Forecast Engine (long-term with seasonal + trend)
     this.enhancedForecastEngine = new EnhancedForecastEngine({
-      getTransactions: () => excludeTransfers(db.getTransactions()),
+      getTransactions: () => this.decryptTransactionsList(excludeTransfers(db.getTransactions())),
       getCategories: () => db.getCategories(),
-      getRecurringItems: () => db.getRecurringItems(),
+      getRecurringItems: () => decryptEntityList(this.db, 'recurring_item', db.getRecurringItems(), this.currentUserId) as RecurringItem[],
     });
 
     // Enhanced CashFlow Engine (combines recurring + category trends)
     this.enhancedCashFlowEngine = new EnhancedCashFlowEngine({
-      getAccountById: (id: string) => db.getAccountById(id),
+      getAccountById: (id: string) => {
+        const account = db.getAccountById(id);
+        if (!account) return account;
+        const [decrypted] = decryptEntityList(this.db, 'account', [account], this.currentUserId) as Account[];
+        return decrypted || account;
+      },
       getRecurringTransactionsByAccount: (accountId: string) => db.getRecurringTransactionsByAccount(accountId),
-      getTransactions: () => excludeTransfers(db.getTransactions()),
+      getTransactions: () => this.decryptTransactionsList(excludeTransfers(db.getTransactions())),
       getCategories: () => db.getCategories(),
-      getRecurringItems: () => db.getRecurringItems(),
+      getRecurringItems: () => decryptEntityList(this.db, 'recurring_item', db.getRecurringItems(), this.currentUserId) as RecurringItem[],
     });
 
     // Budget Suggestion Engine
     this.budgetSuggestionEngine = new BudgetSuggestionEngine({
       getTransactions: (startDate?: Date) => {
-        const txs = excludeTransfers(db.getTransactions());
+        const txs = this.decryptTransactionsList(excludeTransfers(db.getTransactions()));
         if (!startDate) return txs;
         return txs.filter(t => {
           const txDate = t.date instanceof Date ? t.date : new Date(t.date);
@@ -350,17 +381,20 @@ export class IPCHandlers {
       getSubscriptionAudit: async () => this.subscriptionAuditEngine.auditSubscriptions(),
       getBudgetSuggestions: () => this.budgetSuggestionEngine.generateSuggestions(),
       getDebtPayoffReport: () => this.debtPayoffEngine.generateReport(),
-      getRecurringItems: () => db.getRecurringItems().map(item => ({
-        id: item.id,
-        description: item.description,
-        amount: item.amount,
-        frequency: item.frequency,
-        nextOccurrence: item.nextOccurrence,
-        categoryId: item.categoryId,
-        isActive: item.isActive,
-        itemType: item.itemType,
-      })),
-      getAccounts: () => db.getAccounts(),
+      getRecurringItems: () => {
+        const decryptedItems = decryptEntityList(this.db, 'recurring_item', db.getRecurringItems(), this.currentUserId);
+        return decryptedItems.map(item => ({
+          id: item.id,
+          description: item.description,
+          amount: item.amount,
+          frequency: item.frequency,
+          nextOccurrence: item.nextOccurrence,
+          categoryId: item.categoryId,
+          isActive: item.isActive,
+          itemType: item.itemType,
+        }));
+      },
+      getAccounts: () => decryptEntityList(this.db, 'account', db.getAccounts(), this.currentUserId) as Account[],
       getCategories: () => db.getCategories(),
     });
 
@@ -372,6 +406,28 @@ export class IPCHandlers {
     this.benchmarkService = new BenchmarkService();
 
     this.registerHandlers();
+  }
+
+  /** Set the current authenticated user (called from main.ts startup unlock) */
+  setCurrentUserId(userId: string): void {
+    this.currentUserId = userId;
+    this.netWorthEngine.setCurrentUserId(userId);
+    this.cashFlowEngine.setCurrentUserId(userId);
+  }
+
+  private decryptTransactionsList(transactions: Transaction[]): Transaction[] {
+    if (!this.currentUserId) return transactions;
+    return transactions.map(tx => {
+      const account = this.db.getAccountById(tx.accountId);
+      if (!account?.isEncrypted || !account.ownerId) return tx;
+      const dek = getDecryptionDEK(this.db, 'account', account.id, account.ownerId, this.currentUserId!);
+      if (!dek) return tx;
+      const decrypted = decryptEntityFields('transaction', tx as unknown as Record<string, unknown>, dek) as unknown as Transaction;
+      if (typeof decrypted.amount !== 'number' || isNaN(decrypted.amount)) {
+        decrypted.amount = 0;
+      }
+      return decrypted;
+    });
   }
 
   /** Set lock state (called from main.ts auto-lock timer) */
@@ -717,19 +773,163 @@ export class IPCHandlers {
     secureHandle('analytics:getSpendingByCategory', (_event, startDate?: string, endDate?: string) => {
       const start = startDate ? new Date(startDate) : undefined;
       const end = endDate ? new Date(endDate) : undefined;
-      return this.db.getSpendingByCategory(start, end);
+
+      const rawTransactions = this.db.getTransactions();
+      const transactions = this.decryptTransactionsList(rawTransactions);
+      const categories = this.db.getCategories();
+      const categoryMap = new Map(categories.map(c => [c.id, c]));
+
+      const categoryTotals = new Map<string, { total: number; count: number }>();
+
+      for (const tx of transactions) {
+        if (tx.isInternalTransfer || tx.isHidden || !tx.categoryId || tx.amount >= 0) continue;
+
+        const txDate = tx.date instanceof Date ? tx.date : new Date(tx.date);
+        if (start && txDate < start) continue;
+        if (end && txDate > end) continue;
+
+        const current = categoryTotals.get(tx.categoryId) || { total: 0, count: 0 };
+        current.total += Math.abs(tx.amount);
+        current.count += 1;
+        categoryTotals.set(tx.categoryId, current);
+      }
+
+      return Array.from(categoryTotals.entries()).map(([categoryId, { total, count }]) => {
+        const category = categoryMap.get(categoryId);
+        return {
+          categoryId,
+          categoryName: category?.name || 'Unknown',
+          total,
+          count,
+          color: category?.color || '#999999',
+        };
+      });
     });
 
     secureHandle('analytics:getIncomeVsExpensesOverTime', (_event, grouping: 'day' | 'week' | 'month' | 'year', startDate?: string, endDate?: string) => {
       const start = startDate ? new Date(startDate) : undefined;
       const end = endDate ? new Date(endDate) : undefined;
-      return this.db.getIncomeVsExpensesOverTime(grouping, start, end);
+
+      const formatPeriod = (date: Date, grouping: string): string => {
+        const y = date.getFullYear();
+        const m = String(date.getMonth() + 1).padStart(2, '0');
+        const d = String(date.getDate()).padStart(2, '0');
+        switch (grouping) {
+          case 'day': return `${y}-${m}-${d}`;
+          case 'week': {
+            const jan1 = new Date(y, 0, 1);
+            const days = Math.floor((date.getTime() - jan1.getTime()) / 86400000);
+            const weekNum = String(Math.ceil((days + jan1.getDay() + 1) / 7)).padStart(2, '0');
+            return `${y}-W${weekNum}`;
+          }
+          case 'month': return `${y}-${m}`;
+          case 'year': return `${y}`;
+          default: return `${y}-${m}`;
+        }
+      };
+
+      const rawTransactions = this.db.getTransactions();
+      const transactions = this.decryptTransactionsList(rawTransactions);
+
+      const periodTotals = new Map<string, { income: number; expenses: number }>();
+
+      for (const tx of transactions) {
+        if (tx.isInternalTransfer || tx.isHidden) continue;
+
+        const txDate = tx.date instanceof Date ? tx.date : new Date(tx.date);
+        if (start && txDate < start) continue;
+        if (end && txDate > end) continue;
+
+        const period = formatPeriod(txDate, grouping);
+        const current = periodTotals.get(period) || { income: 0, expenses: 0 };
+
+        if (tx.amount > 0) {
+          current.income += tx.amount;
+        } else {
+          current.expenses += Math.abs(tx.amount);
+        }
+
+        periodTotals.set(period, current);
+      }
+
+      return Array.from(periodTotals.entries())
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([period, { income, expenses }]) => ({
+          period,
+          income,
+          expenses,
+          net: income - expenses,
+        }));
     });
 
     secureHandle('analytics:getCategoryTrendsOverTime', (_event, categoryIds: string[], grouping: 'day' | 'week' | 'month' | 'year', startDate?: string, endDate?: string) => {
       const start = startDate ? new Date(startDate) : undefined;
       const end = endDate ? new Date(endDate) : undefined;
-      return this.db.getCategoryTrendsOverTime(categoryIds, grouping, start, end);
+
+      const formatPeriod = (date: Date, grouping: string): string => {
+        const y = date.getFullYear();
+        const m = String(date.getMonth() + 1).padStart(2, '0');
+        const d = String(date.getDate()).padStart(2, '0');
+        switch (grouping) {
+          case 'day': return `${y}-${m}-${d}`;
+          case 'week': {
+            const jan1 = new Date(y, 0, 1);
+            const days = Math.floor((date.getTime() - jan1.getTime()) / 86400000);
+            const weekNum = String(Math.ceil((days + jan1.getDay() + 1) / 7)).padStart(2, '0');
+            return `${y}-W${weekNum}`;
+          }
+          case 'month': return `${y}-${m}`;
+          case 'year': return `${y}`;
+          default: return `${y}-${m}`;
+        }
+      };
+
+      const rawTransactions = this.db.getTransactions();
+      const transactions = this.decryptTransactionsList(rawTransactions);
+      const categories = this.db.getCategories();
+      const categoryMap = new Map(categories.map(c => [c.id, c]));
+      const categoryIdSet = new Set(categoryIds);
+
+      const trendData = new Map<string, Map<string, { total: number; count: number }>>();
+
+      for (const tx of transactions) {
+        if (tx.isInternalTransfer || tx.isHidden || !tx.categoryId || tx.amount >= 0) continue;
+        if (!categoryIdSet.has(tx.categoryId)) continue;
+
+        const txDate = tx.date instanceof Date ? tx.date : new Date(tx.date);
+        if (start && txDate < start) continue;
+        if (end && txDate > end) continue;
+
+        const period = formatPeriod(txDate, grouping);
+
+        if (!trendData.has(tx.categoryId)) {
+          trendData.set(tx.categoryId, new Map());
+        }
+        const categoryPeriods = trendData.get(tx.categoryId)!;
+        const current = categoryPeriods.get(period) || { total: 0, count: 0 };
+        current.total += Math.abs(tx.amount);
+        current.count += 1;
+        categoryPeriods.set(period, current);
+      }
+
+      const result: Array<{ categoryId: string; categoryName: string; period: string; total: number; count: number; average: number; color: string }> = [];
+
+      for (const [categoryId, periods] of trendData.entries()) {
+        const category = categoryMap.get(categoryId);
+        for (const [period, { total, count }] of periods.entries()) {
+          result.push({
+            categoryId,
+            categoryName: category?.name || 'Unknown',
+            period,
+            total,
+            count,
+            average: count > 0 ? total / count : 0,
+            color: category?.color || '#999999',
+          });
+        }
+      }
+
+      return result.sort((a, b) => a.period.localeCompare(b.period));
     });
 
     // Forecast handlers
@@ -2212,6 +2412,15 @@ export class IPCHandlers {
 
       // Store patterns in database for caching
       for (const pattern of result.patterns) {
+        if (isNaN(pattern.seasonalIndex) || !isFinite(pattern.seasonalIndex)) {
+          pattern.seasonalIndex = 1.0;
+        }
+        if (isNaN(pattern.averageSpending) || !isFinite(pattern.averageSpending)) {
+          pattern.averageSpending = 0;
+        }
+        if (isNaN(pattern.transactionCount) || !isFinite(pattern.transactionCount)) {
+          pattern.transactionCount = 0;
+        }
         this.db.upsertSeasonalPattern({
           categoryId: pattern.categoryId,
           year: pattern.year,
@@ -3224,6 +3433,10 @@ export class IPCHandlers {
       }
     });
 
+    secureHandle('security:getCurrentUser', () => {
+      return this.currentUserId;
+    });
+
     secureHandle('security:getAutoLock', () => {
       const val = this.db.getSetting('auto_lock_minutes', '0');
       return parseInt(val, 10) || 0;
@@ -3627,13 +3840,17 @@ export class IPCHandlers {
       return this.db.getSharingDefaults(ownerId, entityType);
     });
 
-    secureHandle('sharing:setDefault', (_event, ownerId: string, recipientId: string, entityType: EncryptableEntityType, permissions: SharePermissions) => {
+    secureHandle('sharing:setDefault', (_event, ownerId: string, recipientId: string, entityType: SharingEntityType, permissions: SharePermissions) => {
       return this.db.setSharingDefault({
         ownerId,
         recipientId,
         entityType,
         permissions,
       });
+    });
+
+    secureHandle('sharing:updateDefault', (_event, defaultId: string, updates: { entityType?: SharingEntityType; permissions?: SharePermissions }) => {
+      return this.db.updateSharingDefault(defaultId, updates);
     });
 
     secureHandle('sharing:removeDefault', (_event, defaultId: string) => {
@@ -3704,6 +3921,330 @@ export class IPCHandlers {
         throw new Error('URL not allowed');
       }
       shell.openExternal(url);
+    });
+
+    // ==================== Safe to Spend ====================
+    secureHandle('safeToSpend:calculate', () => {
+      // Decrypt entities that have encrypted numeric fields
+      const accounts = decryptEntityList(this.db, 'account', this.db.getAccounts(), this.currentUserId) as Account[];
+      const recurringItems = decryptEntityList(this.db, 'recurring_item', this.db.getRecurringItems(), this.currentUserId) as RecurringItem[];
+      const savingsGoals = decryptEntityList(this.db, 'savings_goal', this.db.getSavingsGoals(), this.currentUserId) as SavingsGoal[];
+      const budgetGoals = this.db.getBudgetGoals();
+      const categories = this.db.getCategories();
+
+      const now = new Date();
+      const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+      const threeMonthsAgo = new Date(now);
+      threeMonthsAgo.setMonth(threeMonthsAgo.getMonth() - 3);
+
+      // Coerce any non-number values to 0 (safety net for failed decryption)
+      const ensureNumber = (val: unknown): number => {
+        const n = Number(val);
+        return isNaN(n) ? 0 : n;
+      };
+
+      // Decrypt all transactions for spending and income calculations
+      const rawTransactions = this.db.getTransactions();
+      const transactions = !this.currentUserId ? rawTransactions : rawTransactions.map(tx => {
+        const account = this.db.getAccountById(tx.accountId);
+        if (!account?.isEncrypted || !account.ownerId) return tx;
+        const dek = getDecryptionDEK(this.db, 'account', account.id, account.ownerId, this.currentUserId!);
+        if (!dek) return tx;
+        return decryptEntityFields('transaction', tx as unknown as Record<string, unknown>, dek) as unknown as Transaction;
+      });
+
+      // Compute category spending from decrypted transactions
+      const categorySpending = new Map<string, number>();
+      for (const tx of transactions) {
+        const txAmount = ensureNumber(tx.amount);
+        if (txAmount < 0 && !tx.isInternalTransfer && !tx.isHidden && tx.categoryId) {
+          const txDate = tx.date instanceof Date ? tx.date : new Date(tx.date);
+          if (txDate >= startOfMonth && txDate <= now) {
+            const current = categorySpending.get(tx.categoryId) || 0;
+            categorySpending.set(tx.categoryId, current + Math.abs(txAmount));
+          }
+        }
+      }
+
+      // Estimate monthly income from decrypted transactions
+      const recentIncome = transactions
+        .filter(t => {
+          const txDate = t.date instanceof Date ? t.date : new Date(t.date);
+          return !t.isInternalTransfer && ensureNumber(t.amount) > 0 && txDate >= threeMonthsAgo;
+        })
+        .reduce((sum, t) => sum + ensureNumber(t.amount), 0);
+      const monthlyIncome = Math.round(recentIncome / 3);
+
+      const input: SafeToSpendInput = {
+        accounts: accounts.map(a => ({ id: a.id, balance: ensureNumber(a.balance) })),
+        recurringItems: recurringItems.map(r => ({
+          description: r.description,
+          amount: ensureNumber(r.amount),
+          nextOccurrence: r.nextOccurrence,
+          isActive: r.isActive,
+        })),
+        savingsGoals: savingsGoals.map(g => ({
+          name: g.name,
+          targetAmount: ensureNumber(g.targetAmount),
+          currentAmount: ensureNumber(g.currentAmount),
+          targetDate: g.targetDate ?? null,
+          isActive: g.isActive,
+        })),
+        budgetGoals: budgetGoals.map(bg => ({
+          categoryId: bg.categoryId,
+          amount: bg.amount,
+          period: bg.period as 'weekly' | 'monthly' | 'yearly',
+        })),
+        categorySpending,
+        categories: categories.map(c => ({ id: c.id, name: c.name })),
+        monthlyIncome,
+      };
+
+      return calculateSafeToSpend(input);
+    });
+
+    // ==================== Age of Money ====================
+    secureHandle('ageOfMoney:calculate', () => {
+      // Decrypt transaction amounts (inherited from encrypted accounts)
+      const rawTransactions = this.db.getTransactions();
+      const transactions = !this.currentUserId ? rawTransactions : rawTransactions.map(tx => {
+        const account = this.db.getAccountById(tx.accountId);
+        if (!account?.isEncrypted || !account.ownerId) return tx;
+        const dek = getDecryptionDEK(this.db, 'account', account.id, account.ownerId, this.currentUserId!);
+        if (!dek) return tx;
+        return decryptEntityFields('transaction', tx as unknown as Record<string, unknown>, dek) as unknown as Transaction;
+      });
+
+      // Get reimbursement income IDs to exclude
+      const reimbursementIncomeIds = new Set<string>();
+      for (const tx of transactions) {
+        if (tx.amount > 0) {
+          const reimbs = this.db.getReimbursementsForIncome(tx.id);
+          if (reimbs.length > 0) {
+            reimbursementIncomeIds.add(tx.id);
+          }
+        }
+      }
+
+      return calculateAgeOfMoney({
+        transactions: transactions.map(t => ({
+          id: t.id,
+          date: t.date,
+          amount: t.amount,
+          isInternalTransfer: t.isInternalTransfer,
+          description: t.description,
+        })),
+        reimbursementIncomeIds,
+      });
+    });
+
+    // ==================== Tax Lot Reports ====================
+    secureHandle('taxLotReport:generate', (_event, taxYear: number) => {
+      const yearStart = new Date(taxYear, 0, 1);
+      const yearEnd = new Date(taxYear, 11, 31, 23, 59, 59, 999);
+
+      // Get realized gains for the year
+      const sellTxs = this.db.getSellTransactionsByDateRange(yearStart, yearEnd);
+      const realizedGains = sellTxs.map(tx => ({
+        transactionId: tx.id,
+        holdingId: tx.holdingId,
+        ticker: tx.ticker,
+        sellDate: new Date(tx.date),
+        shares: tx.shares / 10000,
+        proceeds: tx.pricePerShare * (tx.shares / 10000) - tx.fees,
+        costBasis: tx.costBasis,
+        gain: tx.pricePerShare * (tx.shares / 10000) - tx.fees - tx.costBasis,
+        gainPercent: tx.costBasis > 0 ? ((tx.pricePerShare * (tx.shares / 10000) - tx.fees - tx.costBasis) / tx.costBasis) * 100 : 0,
+        holdingPeriodDays: Math.round((tx.date - tx.purchaseDate) / (1000 * 60 * 60 * 24)),
+        isLongTerm: (tx.date - tx.purchaseDate) > 365 * 24 * 60 * 60 * 1000,
+      }));
+
+      // Get all investment transactions for wash sale detection
+      const investmentTxs = this.db.getInvestmentTransactions();
+      const holdings = this.db.getHoldings();
+
+      return generateTaxLotReport({
+        realizedGains,
+        investmentTransactions: investmentTxs.map(tx => ({
+          id: tx.id,
+          holdingId: tx.holdingId,
+          type: tx.type as 'buy' | 'sell' | 'dividend' | 'stock_split' | 'drip',
+          date: tx.date,
+          shares: tx.shares,
+          totalAmount: tx.totalAmount,
+        })),
+        holdings: holdings.map(h => ({
+          id: h.id,
+          ticker: h.ticker,
+        })),
+        taxYear,
+      });
+    });
+
+    secureHandle('taxLotReport:exportCSV', (_event, taxYear: number) => {
+      const yearStart = new Date(taxYear, 0, 1);
+      const yearEnd = new Date(taxYear, 11, 31, 23, 59, 59, 999);
+
+      const sellTxs = this.db.getSellTransactionsByDateRange(yearStart, yearEnd);
+      const realizedGains = sellTxs.map(tx => ({
+        transactionId: tx.id,
+        holdingId: tx.holdingId,
+        ticker: tx.ticker,
+        sellDate: new Date(tx.date),
+        shares: tx.shares / 10000,
+        proceeds: tx.pricePerShare * (tx.shares / 10000) - tx.fees,
+        costBasis: tx.costBasis,
+        gain: tx.pricePerShare * (tx.shares / 10000) - tx.fees - tx.costBasis,
+        gainPercent: tx.costBasis > 0 ? ((tx.pricePerShare * (tx.shares / 10000) - tx.fees - tx.costBasis) / tx.costBasis) * 100 : 0,
+        holdingPeriodDays: Math.round((tx.date - tx.purchaseDate) / (1000 * 60 * 60 * 24)),
+        isLongTerm: (tx.date - tx.purchaseDate) > 365 * 24 * 60 * 60 * 1000,
+      }));
+
+      const investmentTxs = this.db.getInvestmentTransactions();
+      const holdings = this.db.getHoldings();
+
+      const taxReport = generateTaxLotReport({
+        realizedGains,
+        investmentTransactions: investmentTxs.map(tx => ({
+          id: tx.id,
+          holdingId: tx.holdingId,
+          type: tx.type as 'buy' | 'sell' | 'dividend' | 'stock_split' | 'drip',
+          date: tx.date,
+          shares: tx.shares,
+          totalAmount: tx.totalAmount,
+        })),
+        holdings: holdings.map(h => ({
+          id: h.id,
+          ticker: h.ticker,
+        })),
+        taxYear,
+      });
+
+      // Generate CSV content
+      const allEntries = [
+        ...taxReport.shortTermGains.entries.map(e => ({ ...e, termType: 'Short-Term' })),
+        ...taxReport.longTermGains.entries.map(e => ({ ...e, termType: 'Long-Term' })),
+      ];
+
+      const header = 'Term Type,Ticker,Shares,Purchase Date,Sell Date,Proceeds,Cost Basis,Gain/Loss,Holding Period (Days),Wash Sale\n';
+      const rows = allEntries.map(e =>
+        `${e.termType},${e.ticker},${e.shares},${e.purchaseDate instanceof Date ? e.purchaseDate.toISOString().split('T')[0] : new Date(e.purchaseDate).toISOString().split('T')[0]},${e.sellDate instanceof Date ? e.sellDate.toISOString().split('T')[0] : new Date(e.sellDate).toISOString().split('T')[0]},${(e.proceeds / 100).toFixed(2)},${(e.costBasis / 100).toFixed(2)},${(e.gain / 100).toFixed(2)},${e.holdingPeriodDays},${e.hasWashSale ? 'Yes' : 'No'}`
+      ).join('\n');
+
+      const csvContent = header + rows;
+      const filename = `tax-lot-report-${taxYear}.csv`;
+
+      return { csvContent, filename, report: taxReport };
+    });
+
+    // ==================== Enhanced Automation Rules ====================
+    secureHandle('automationActions:getForRule', (_event, ruleId: string) => {
+      return this.db.getActionsForRule(ruleId);
+    });
+
+    secureHandle('automationActions:create', (_event, action: Omit<AutomationRuleAction, 'id' | 'createdAt'>) => {
+      return this.db.createAutomationAction({
+        ruleId: action.ruleId,
+        actionType: action.actionType,
+        actionValue: action.actionValue,
+      });
+    });
+
+    secureHandle('automationActions:delete', (_event, id: string) => {
+      return this.db.deleteAutomationAction(id);
+    });
+
+    secureHandle('automationActions:getEnhancedRules', () => {
+      const rules = this.db.getCategoryRules();
+      return rules.map(rule => {
+        const actions = this.db.getActionsForRule(rule.id);
+        const raw = rule as unknown as Record<string, unknown>;
+        return {
+          ...rule,
+          amountMin: raw.amountMin ?? null,
+          amountMax: raw.amountMax ?? null,
+          accountFilter: raw.accountFilter ?? null,
+          directionFilter: raw.directionFilter ?? null,
+          actions,
+        };
+      });
+    });
+
+    secureHandle('automationActions:updateRuleConditions', (
+      _event,
+      id: string,
+      conditions: { amountMin?: number | null; amountMax?: number | null; accountFilter?: string[] | null; directionFilter?: string | null }
+    ) => {
+      return this.db.updateRuleConditions(id, conditions);
+    });
+
+    // ==================== Paycheck Allocations ====================
+    secureHandle('paycheckAllocations:getAll', () => {
+      return this.db.getAllPaycheckAllocations();
+    });
+
+    secureHandle('paycheckAllocations:getByStream', (_event, incomeStreamId: string) => {
+      return this.db.getPaycheckAllocationsByStream(incomeStreamId);
+    });
+
+    secureHandle('paycheckAllocations:create', (_event, allocation: { incomeStreamId: string; incomeDescription: string; allocationType: string; targetId: string; amount: number }) => {
+      return this.db.createPaycheckAllocation({
+        incomeStreamId: allocation.incomeStreamId,
+        incomeDescription: allocation.incomeDescription,
+        allocationType: allocation.allocationType,
+        targetId: allocation.targetId,
+        amount: allocation.amount,
+      });
+    });
+
+    secureHandle('paycheckAllocations:update', (_event, id: string, updates: { amount?: number; targetId?: string; allocationType?: string }) => {
+      return this.db.updatePaycheckAllocation(id, updates);
+    });
+
+    secureHandle('paycheckAllocations:delete', (_event, id: string) => {
+      return this.db.deletePaycheckAllocation(id);
+    });
+
+    secureHandle('paycheckAllocations:getBudgetView', (_event, streamId?: string) => {
+      const incomeResult = this.incomeAnalysisEngine.analyzeIncome();
+      const allocations = this.db.getAllPaycheckAllocations();
+      const recurringItems = this.db.getRecurringItems();
+      const budgetGoals = this.db.getBudgetGoals();
+      const categories = this.db.getCategories();
+      const savingsGoals = this.db.getSavingsGoals();
+
+      const input: PaycheckBudgetViewInput = {
+        incomeStreams: incomeResult.streams.map(s => ({
+          id: s.description.replace(/\s+/g, '-').toLowerCase() + '-' + s.frequency,
+          description: s.description,
+          averageAmount: s.averageAmount,
+          frequency: s.frequency,
+        })),
+        allocations: allocations.map(a => ({
+          id: a.id,
+          incomeStreamId: a.incomeStreamId,
+          incomeDescription: a.incomeDescription,
+          allocationType: a.allocationType as 'recurring_item' | 'budget_category' | 'savings_goal',
+          targetId: a.targetId,
+          amount: a.amount,
+          createdAt: new Date(a.createdAt),
+        })),
+        targets: {
+          recurringItems: recurringItems.map(r => ({ id: r.id, description: r.description })),
+          budgetCategories: categories
+            .filter(c => budgetGoals.some(bg => bg.categoryId === c.id))
+            .map(c => ({ id: c.id, name: c.name })),
+          savingsGoals: savingsGoals.map(g => ({ id: g.id, name: g.name })),
+        },
+      };
+
+      if (streamId) {
+        const paycheckBudgetEngine = new PaycheckBudgetEngine();
+        return paycheckBudgetEngine.buildView(input, streamId);
+      } else {
+        const paycheckBudgetEngine = new PaycheckBudgetEngine();
+        return paycheckBudgetEngine.buildAllViews(input);
+      }
     });
   }
 
@@ -3797,6 +4338,9 @@ export class IPCHandlers {
     ipcMain.removeHandler('analytics:getSpendingByCategory');
     ipcMain.removeHandler('analytics:getIncomeVsExpensesOverTime');
     ipcMain.removeHandler('analytics:getCategoryTrendsOverTime');
+
+    ipcMain.removeHandler('categoryTrends:getSelectedCategories');
+    ipcMain.removeHandler('categoryTrends:setSelectedCategories');
 
     ipcMain.removeHandler('forecast:spending');
     ipcMain.removeHandler('forecast:multiPeriod');
@@ -4101,6 +4645,7 @@ export class IPCHandlers {
 
     // Security
     ipcMain.removeHandler('security:lock');
+    ipcMain.removeHandler('security:getCurrentUser');
     ipcMain.removeHandler('security:getAutoLock');
     ipcMain.removeHandler('security:setAutoLock');
     ipcMain.removeHandler('security:getMemberAuthStatus');
@@ -4117,6 +4662,7 @@ export class IPCHandlers {
     ipcMain.removeHandler('sharing:getSharedWithMe');
     ipcMain.removeHandler('sharing:getDefaults');
     ipcMain.removeHandler('sharing:setDefault');
+    ipcMain.removeHandler('sharing:updateDefault');
     ipcMain.removeHandler('sharing:removeDefault');
 
     // Onboarding
@@ -4133,6 +4679,31 @@ export class IPCHandlers {
     ipcMain.removeHandler('dashboardLayout:set');
     ipcMain.removeHandler('dashboardWidgets:get');
     ipcMain.removeHandler('dashboardWidgets:set');
+
+    // Safe to Spend
+    ipcMain.removeHandler('safeToSpend:calculate');
+
+    // Age of Money
+    ipcMain.removeHandler('ageOfMoney:calculate');
+
+    // Tax Lot Reports
+    ipcMain.removeHandler('taxLotReport:generate');
+    ipcMain.removeHandler('taxLotReport:exportCSV');
+
+    // Enhanced Automation Rules
+    ipcMain.removeHandler('automationActions:getForRule');
+    ipcMain.removeHandler('automationActions:create');
+    ipcMain.removeHandler('automationActions:delete');
+    ipcMain.removeHandler('automationActions:getEnhancedRules');
+    ipcMain.removeHandler('automationActions:updateRuleConditions');
+
+    // Paycheck Allocations
+    ipcMain.removeHandler('paycheckAllocations:getAll');
+    ipcMain.removeHandler('paycheckAllocations:getByStream');
+    ipcMain.removeHandler('paycheckAllocations:create');
+    ipcMain.removeHandler('paycheckAllocations:update');
+    ipcMain.removeHandler('paycheckAllocations:delete');
+    ipcMain.removeHandler('paycheckAllocations:getBudgetView');
 
     // Shell
     ipcMain.removeHandler('shell:openExternal');

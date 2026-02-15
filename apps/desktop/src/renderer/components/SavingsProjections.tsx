@@ -72,7 +72,16 @@ const SavingsProjections: React.FC = () => {
 
   const formatDate = (date: Date | string | null) => {
     if (!date) return 'N/A';
-    return new Date(date).toLocaleDateString('en-US', { month: 'short', year: 'numeric' });
+    let d: Date;
+    if (date instanceof Date) {
+      d = date;
+    } else if (typeof date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(date)) {
+      const [y, m, day] = date.split('-').map(Number);
+      d = new Date(y, m - 1, day);
+    } else {
+      d = new Date(date);
+    }
+    return d.toLocaleDateString('en-US', { month: 'short', year: 'numeric' });
   };
 
   const formatCurrency = (amountInCents: number) => {

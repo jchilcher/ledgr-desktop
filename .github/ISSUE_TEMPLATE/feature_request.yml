@@ -1,0 +1,26 @@
+name: Feature Request
+description: Suggest a new feature for Ledgr Desktop
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: description
+    attributes:
+      label: Feature description
+      description: A clear and concise description of the feature you'd like.
+    validations:
+      required: true
+  - type: textarea
+    id: use-case
+    attributes:
+      label: Use case / motivation
+      description: Why do you want this feature? What problem does it solve?
+    validations:
+      required: true
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed solution
+      description: If you have an idea for how this could be implemented, describe it here.
+    validations:
+      required: false

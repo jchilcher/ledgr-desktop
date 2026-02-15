@@ -2,7 +2,7 @@ import { useEffect, useState, useCallback, useRef, useMemo } from 'react';
 import { Responsive, WidthProvider, Layout, Layouts } from 'react-grid-layout';
 import 'react-grid-layout/css/styles.css';
 import 'react-resizable/css/styles.css';
-import { Account, Transaction, Category, TransactionSplit, SavingsGoalAlert, RecurringItem } from '../../shared/types';
+import { Account, Transaction, Category, TransactionSplit, SavingsGoalAlert, RecurringItem, SafeToSpendResult, AgeOfMoneyResult } from '../../shared/types';
 import EmptyState from './EmptyState';
 import { useHousehold } from '../contexts/HouseholdContext';
 
@@ -48,7 +48,9 @@ type WidgetId =
   | 'savings-goals'
   | 'net-worth'
   | 'budget-progress'
-  | 'upcoming-bills';
+  | 'upcoming-bills'
+  | 'safe-to-spend'
+  | 'age-of-money';
 
 interface WidgetDef {
   id: WidgetId;
@@ -68,11 +70,13 @@ const ALL_WIDGETS: WidgetDef[] = [
   { id: 'net-worth', title: 'Net Worth', defaultLayout: { x: 0, y: 25, w: 4, h: 6 }, minW: 3, minH: 4 },
   { id: 'budget-progress', title: 'Budget Progress', defaultLayout: { x: 4, y: 25, w: 4, h: 6 }, minW: 3, minH: 4 },
   { id: 'upcoming-bills', title: 'Upcoming Bills', defaultLayout: { x: 8, y: 25, w: 4, h: 6 }, minW: 3, minH: 4 },
+  { id: 'safe-to-spend', title: 'Safe to Spend', defaultLayout: { x: 0, y: 31, w: 4, h: 6 }, minW: 3, minH: 4 },
+  { id: 'age-of-money', title: 'Age of Money', defaultLayout: { x: 4, y: 31, w: 4, h: 6 }, minW: 3, minH: 4 },
 ];
 
 const DEFAULT_VISIBLE: WidgetId[] = [
   'balance-summary', 'spending', 'income', 'top-categories',
-  'recent-transactions', 'savings-goals',
+  'recent-transactions', 'savings-goals', 'safe-to-spend', 'age-of-money',
 ];
 
 function buildDefaultLayouts(visibleIds: WidgetId[]): ResponsiveLayouts {
@@ -110,6 +114,8 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
   const [netWorthData, setNetWorthData] = useState<{ current: number; change: number } | null>(null);
   const [budgetProgressData, setBudgetProgressData] = useState<{ onTrack: number; total: number } | null>(null);
   const [upcomingBills, setUpcomingBills] = useState<UpcomingBill[]>([]);
+  const [safeToSpendData, setSafeToSpendData] = useState<SafeToSpendResult | null>(null);
+  const [ageOfMoneyData, setAgeOfMoneyData] = useState<AgeOfMoneyResult | null>(null);
 
   // Layout state
   const [visibleWidgets, setVisibleWidgets] = useState<Set<WidgetId>>(new Set(DEFAULT_VISIBLE));
@@ -431,6 +437,22 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
       } catch {
         // Non-critical
       }
+
+      // Fetch safe to spend
+      try {
+        const s2s = await window.api.safeToSpend.calculate();
+        setSafeToSpendData(s2s);
+      } catch {
+        // Non-critical
+      }
+
+      // Fetch age of money
+      try {
+        const aom = await window.api.ageOfMoney.calculate();
+        setAgeOfMoneyData(aom);
+      } catch {
+        // Non-critical
+      }
     } catch (error) {
       console.error('Failed to load dashboard data:', error);
     } finally {
@@ -446,7 +468,16 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
   };
 
   const formatDate = (date: Date | string): string => {
-    return new Date(date).toLocaleDateString('en-US', {
+    let d: Date;
+    if (date instanceof Date) {
+      d = date;
+    } else if (/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+      const [y, m, day] = date.split('-').map(Number);
+      d = new Date(y, m - 1, day);
+    } else {
+      d = new Date(date);
+    }
+    return d.toLocaleDateString('en-US', {
       month: 'short',
       day: 'numeric',
       year: 'numeric',
@@ -770,6 +801,75 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
     </div>
   );
 
+  const safeCurrency = (cents: number): string => {
+    if (cents == null || isNaN(cents)) return '—';
+    return '$' + (cents / 100).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  };
+
+  const renderSafeToSpend = () => {
+    if (!safeToSpendData) return <div className="widget-loading">Loading...</div>;
+
+    const statusColor = safeToSpendData.status === 'healthy' ? '#4ade80' : safeToSpendData.status === 'caution' ? '#facc15' : '#f87171';
+
+    return (
+      <div style={{ padding: '16px' }}>
+        <div style={{ fontSize: '32px', fontWeight: 700, color: statusColor, marginBottom: '8px' }}>
+          {safeCurrency(safeToSpendData.safeAmount)}
+        </div>
+        <div style={{ fontSize: '13px', color: 'var(--text-secondary)', marginBottom: '12px' }}>
+          Available through {new Date(new Date().getFullYear(), new Date().getMonth() + 1, 0).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}
+        </div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', fontSize: '12px', color: 'var(--text-secondary)' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+            <span>Balance</span>
+            <span>{safeCurrency(safeToSpendData.totalBalance)}</span>
+          </div>
+          <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+            <span>Upcoming Bills</span>
+            <span>-{safeCurrency(safeToSpendData.upcomingBills)}</span>
+          </div>
+          <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+            <span>Savings Goals</span>
+            <span>-{safeCurrency(safeToSpendData.savingsCommitments)}</span>
+          </div>
+          <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+            <span>Budget Remaining</span>
+            <span>-{safeCurrency(safeToSpendData.budgetRemaining)}</span>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  const renderAgeOfMoney = () => {
+    if (!ageOfMoneyData) return <div className="widget-loading">Loading...</div>;
+
+    const trendArrow = ageOfMoneyData.trend === 'up' ? '↑' : ageOfMoneyData.trend === 'down' ? '↓' : '→';
+    const trendColor = ageOfMoneyData.trend === 'up' ? '#4ade80' : ageOfMoneyData.trend === 'down' ? '#f87171' : 'var(--text-secondary)';
+
+    return (
+      <div style={{ padding: '16px' }}>
+        <div style={{ display: 'flex', alignItems: 'baseline', gap: '8px', marginBottom: '8px' }}>
+          <span style={{ fontSize: '32px', fontWeight: 700, color: 'var(--text-primary)' }}>
+            {isNaN(ageOfMoneyData.currentAge) ? 0 : Math.round(ageOfMoneyData.currentAge)}
+          </span>
+          <span style={{ fontSize: '16px', color: 'var(--text-secondary)' }}>days</span>
+          <span style={{ fontSize: '20px', color: trendColor, marginLeft: 'auto' }}>
+            {trendArrow}
+          </span>
+        </div>
+        <div style={{ fontSize: '13px', color: 'var(--text-secondary)', marginBottom: '8px' }}>
+          {ageOfMoneyData.explanation}
+        </div>
+        {ageOfMoneyData.previousMonthAge !== null && (
+          <div style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>
+            Last month: {isNaN(ageOfMoneyData.previousMonthAge) ? 0 : Math.round(ageOfMoneyData.previousMonthAge)} days
+          </div>
+        )}
+      </div>
+    );
+  };
+
   const widgetRenderers: Record<WidgetId, () => JSX.Element> = useMemo(() => ({
     'balance-summary': renderBalanceSummary,
     'spending': renderSpending,
@@ -780,8 +880,10 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
     'net-worth': renderNetWorth,
     'budget-progress': renderBudgetProgress,
     'upcoming-bills': renderUpcomingBills,
+    'safe-to-spend': renderSafeToSpend,
+    'age-of-money': renderAgeOfMoney,
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }), [stats, categories, savingsAlerts, netWorthData, budgetProgressData, upcomingBills]);
+  }), [stats, categories, savingsAlerts, netWorthData, budgetProgressData, upcomingBills, safeToSpendData, ageOfMoneyData]);
 
   if (loading) {
     return <div style={{ padding: '20px' }}>Loading dashboard...</div>;

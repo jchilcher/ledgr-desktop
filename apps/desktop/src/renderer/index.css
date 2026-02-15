@@ -3472,10 +3472,12 @@ select option {
   padding: var(--space-4);
   margin-bottom: var(--space-4);
   box-shadow: var(--shadow-sm);
+  overflow: hidden;
 }
 
 .review-category-row {
   padding: var(--space-2) 0;
+  overflow: hidden;
 }
 
 /* ==================== Customizable Dashboard Styles (Phase 4A) ==================== */

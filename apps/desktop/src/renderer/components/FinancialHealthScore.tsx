@@ -6,6 +6,7 @@ interface FinancialHealthFactor {
   weight: number;
   status: 'excellent' | 'good' | 'fair' | 'poor';
   recommendation?: string;
+  metric?: { currentValue: string; targetValue: string; unit: string };
 }
 
 interface FinancialHealthScore {
@@ -263,6 +264,23 @@ const FinancialHealthScoreComponent: React.FC = () => {
                   <span style={{ fontWeight: 'bold', fontSize: '18px' }}>{factor.score}</span>
                 </div>
               </div>
+
+              {factor.metric && (
+                <div style={{
+                  display: 'flex',
+                  alignItems: 'baseline',
+                  gap: '6px',
+                  marginBottom: '8px',
+                  fontSize: '13px',
+                }}>
+                  <span style={{ fontWeight: '600', color: getStatusColor(factor.status) }}>
+                    {factor.metric.currentValue}
+                  </span>
+                  <span style={{ color: 'var(--color-text-muted)' }}>
+                    / {factor.metric.targetValue} {factor.metric.unit}
+                  </span>
+                </div>
+              )}
 
               {/* Progress Bar */}
               <div

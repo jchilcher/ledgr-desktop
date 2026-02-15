@@ -49,9 +49,9 @@ We are not responsible for the availability, accuracy, or terms of these third-p
 
 ## Governing Law
 
-These terms shall be governed by the laws of the State of Oregon, United States, without regard to its conflict of law provisions.
+These terms shall be governed by the laws of the State of Arizona, United States, without regard to its conflict of law provisions.
 
 ## Contact
 
 - **General support:** [support@techloom.it](mailto:support@techloom.it)
-- **GitHub Issues:** [github.com/jchilcher/ledgr/issues](https://github.com/jchilcher/ledgr/issues)
+- **GitHub Issues:** [github.com/jchilcher/ledgr-desktop/issues](https://github.com/jchilcher/ledgr-desktop/issues)

@@ -706,6 +706,7 @@ export interface FinancialHealthFactor {
   weight: number;
   description: string;
   recommendation?: string;
+  metric?: { currentValue: string; targetValue: string; unit: string };
 }
 
 export interface FinancialHealthScore {
@@ -1255,7 +1256,118 @@ export interface DatabaseComparisonInfo {
 }
 
 // Encryption types
+// ==================== Safe to Spend ====================
+export interface SafeToSpendResult {
+  safeAmount: number;           // cents
+  totalBalance: number;
+  upcomingBills: number;        // remaining bills this month
+  savingsCommitments: number;   // monthly contribution needed
+  budgetRemaining: number;      // unspent budget for month
+  status: 'healthy' | 'caution' | 'low';
+  breakdown: {
+    bills: Array<{ description: string; amount: number; dueDate: Date }>;
+    savings: Array<{ goalName: string; monthlyNeeded: number }>;
+    budgetItems: Array<{ categoryName: string; remaining: number }>;
+  };
+}
+
+// ==================== Age of Money ====================
+export interface AgeOfMoneyResult {
+  currentAge: number;              // days (rolling 30-day window)
+  previousMonthAge: number | null; // for trend comparison
+  trend: 'up' | 'down' | 'stable';
+  explanation: string;
+}
+
+// ==================== Tax Lot Reports ====================
+export interface TaxLotReportEntry {
+  ticker: string;
+  shares: number;
+  purchaseDate: Date;
+  sellDate: Date;
+  proceeds: number;       // cents
+  costBasis: number;      // cents
+  gain: number;           // cents
+  holdingPeriodDays: number;
+  isLongTerm: boolean;
+  hasWashSale: boolean;
+}
+
+export interface TaxLotGainGroup {
+  totalProceeds: number;
+  totalCostBasis: number;
+  totalGain: number;
+  entries: TaxLotReportEntry[];
+}
+
+export interface WashSaleFlag {
+  sellTransactionId: string;
+  repurchaseTransactionId: string;
+  repurchaseDate: Date;
+  disallowedLoss: number;  // cents (positive)
+}
+
+export interface TaxLotReport {
+  taxYear: number;
+  shortTermGains: TaxLotGainGroup;
+  longTermGains: TaxLotGainGroup;
+  totalDividends: number;  // cents
+  washSaleFlags: WashSaleFlag[];
+  summary: {
+    netShortTermGain: number;
+    netLongTermGain: number;
+    totalDividends: number;
+  };
+}
+
+// ==================== Enhanced Automation Rules ====================
+export type AutomationActionType = 'assign_category' | 'add_tag' | 'hide_from_reports' | 'mark_transfer';
+
+export interface AutomationRuleAction {
+  id: string;
+  ruleId: string;
+  actionType: AutomationActionType;
+  actionValue: string | null;
+  createdAt: Date;
+}
+
+export interface EnhancedCategoryRule extends CategoryRule {
+  amountMin: number | null;
+  amountMax: number | null;
+  accountFilter: string[] | null;   // account IDs
+  directionFilter: 'income' | 'expense' | null;
+  actions: AutomationRuleAction[];
+}
+
+// ==================== Paycheck-Based Budgeting ====================
+export type PaycheckAllocationType = 'recurring_item' | 'budget_category' | 'savings_goal';
+
+export interface PaycheckAllocation {
+  id: string;
+  incomeStreamId: string;
+  incomeDescription: string;
+  allocationType: PaycheckAllocationType;
+  targetId: string;
+  targetName: string;
+  amount: number;  // cents
+  createdAt: Date;
+}
+
+export interface PaycheckBudgetView {
+  incomeStream: {
+    id: string;
+    description: string;
+    averageAmount: number;
+    frequency: string;
+  };
+  allocations: PaycheckAllocation[];
+  totalAllocated: number;
+  unallocated: number;
+}
+
 export type EncryptableEntityType = 'account' | 'recurring_item' | 'savings_goal' | 'manual_asset' | 'manual_liability' | 'investment_account';
+
+export type SharingEntityType = EncryptableEntityType | 'all';
 
 export interface SharePermissions {
   view: boolean;
@@ -1278,7 +1390,7 @@ export interface SharingDefault {
   id: string;
   ownerId: string;
   recipientId: string;
-  entityType: EncryptableEntityType;
+  entityType: SharingEntityType;
   permissions: SharePermissions;
   createdAt: Date;
 }

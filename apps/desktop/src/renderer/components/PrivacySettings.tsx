@@ -5,14 +5,15 @@ import {
   DataShare,
   SharingDefault,
   SharePermissions,
-  EncryptableEntityType,
+  SharingEntityType,
 } from '../../shared/types';
 
 interface PrivacySettingsProps {
   onToast: (message: string, type: 'success' | 'error') => void;
 }
 
-const ENTITY_TYPES: { value: EncryptableEntityType; label: string }[] = [
+const ENTITY_TYPE_OPTIONS: { value: SharingEntityType; label: string }[] = [
+  { value: 'all', label: 'All Types' },
   { value: 'account', label: 'Accounts' },
   { value: 'recurring_item', label: 'Recurring Items' },
   { value: 'savings_goal', label: 'Savings Goals' },
@@ -21,8 +22,8 @@ const ENTITY_TYPES: { value: EncryptableEntityType; label: string }[] = [
   { value: 'investment_account', label: 'Investment Accounts' },
 ];
 
-function entityTypeLabel(type: EncryptableEntityType): string {
-  return ENTITY_TYPES.find(e => e.value === type)?.label ?? type;
+function entityTypeLabel(type: SharingEntityType): string {
+  return ENTITY_TYPE_OPTIONS.find(e => e.value === type)?.label ?? type;
 }
 
 function permissionsSummary(p: SharePermissions): string {
@@ -40,13 +41,14 @@ export default function PrivacySettings({ onToast }: PrivacySettingsProps) {
   const [sharedWithMe, setSharedWithMe] = useState<DataShare[]>([]);
   const [loading, setLoading] = useState(false);
 
-  // Default form state
-  const [showDefaultForm, setShowDefaultForm] = useState(false);
-  const [defaultRecipientId, setDefaultRecipientId] = useState('');
-  const [defaultEntityType, setDefaultEntityType] = useState<EncryptableEntityType>('account');
-  const [defaultPermView, setDefaultPermView] = useState(true);
-  const [defaultPermCombine, setDefaultPermCombine] = useState(false);
-  const [defaultPermReports, setDefaultPermReports] = useState(false);
+  // Form state (used for both add and edit)
+  const [showForm, setShowForm] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [formRecipientId, setFormRecipientId] = useState('');
+  const [formEntityType, setFormEntityType] = useState<SharingEntityType>('all');
+  const [formPermView, setFormPermView] = useState(true);
+  const [formPermCombine, setFormPermCombine] = useState(false);
+  const [formPermReports, setFormPermReports] = useState(false);
 
   const loadMemberAuthStatus = useCallback(async () => {
     try {
@@ -86,33 +88,76 @@ export default function PrivacySettings({ onToast }: PrivacySettingsProps) {
   const hasPassword = currentMember?.hasPassword ?? false;
   const otherMembers = users.filter(u => u.id !== currentUserId);
 
-  const resetDefaultForm = () => {
-    setShowDefaultForm(false);
-    setDefaultRecipientId('');
-    setDefaultEntityType('account');
-    setDefaultPermView(true);
-    setDefaultPermCombine(false);
-    setDefaultPermReports(false);
+  const resetForm = () => {
+    setShowForm(false);
+    setEditingId(null);
+    setFormRecipientId('');
+    setFormEntityType('all');
+    setFormPermView(true);
+    setFormPermCombine(false);
+    setFormPermReports(false);
   };
 
-  const handleAddDefault = async (e: React.FormEvent) => {
+  const startAdd = () => {
+    if (otherMembers.length > 0) {
+      setFormRecipientId(otherMembers[0].id);
+    }
+    setEditingId(null);
+    setFormEntityType('all');
+    setFormPermView(true);
+    setFormPermCombine(false);
+    setFormPermReports(false);
+    setShowForm(true);
+  };
+
+  const startEdit = (d: SharingDefault) => {
+    setEditingId(d.id);
+    setFormRecipientId(d.recipientId);
+    setFormEntityType(d.entityType);
+    setFormPermView(d.permissions.view);
+    setFormPermCombine(d.permissions.combine);
+    setFormPermReports(d.permissions.reports);
+    setShowForm(true);
+  };
+
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!currentUserId || !defaultRecipientId) return;
+    if (!currentUserId || !formRecipientId) return;
 
     try {
       setLoading(true);
-      await window.api.sharing.setDefault(
-        currentUserId,
-        defaultRecipientId,
-        defaultEntityType,
-        { view: defaultPermView, combine: defaultPermCombine, reports: defaultPermReports },
-      );
+      const permissions = { view: formPermView, combine: formPermCombine, reports: formPermReports };
+
+      if (editingId) {
+        const existing = defaults.find(d => d.id === editingId);
+        const updates: { entityType?: SharingEntityType; permissions?: SharePermissions } = {};
+        if (existing && existing.entityType !== formEntityType) updates.entityType = formEntityType;
+        if (existing && (
+          existing.permissions.view !== permissions.view ||
+          existing.permissions.combine !== permissions.combine ||
+          existing.permissions.reports !== permissions.reports
+        )) {
+          updates.permissions = permissions;
+        }
+        if (Object.keys(updates).length > 0) {
+          await window.api.sharing.updateDefault(editingId, updates);
+        }
+        onToast('Sharing rule updated', 'success');
+      } else {
+        await window.api.sharing.setDefault(
+          currentUserId,
+          formRecipientId,
+          formEntityType,
+          permissions,
+        );
+        onToast('Sharing rule added', 'success');
+      }
+
       await loadDefaults();
-      resetDefaultForm();
-      onToast('Sharing rule added', 'success');
+      resetForm();
     } catch (err) {
-      console.error('Error adding sharing default:', err);
-      onToast(err instanceof Error ? err.message : 'Failed to add sharing rule', 'error');
+      console.error('Error saving sharing default:', err);
+      onToast(err instanceof Error ? err.message : 'Failed to save sharing rule', 'error');
     } finally {
       setLoading(false);
     }
@@ -238,14 +283,24 @@ export default function PrivacySettings({ onToast }: PrivacySettingsProps) {
                       <td style={{ padding: '8px' }}>{getUserName(d.recipientId)}</td>
                       <td style={{ padding: '8px' }}>{permissionsSummary(d.permissions)}</td>
                       <td style={{ padding: '8px', textAlign: 'right' }}>
-                        <button
-                          onClick={() => handleRemoveDefault(d.id)}
-                          className="btn btn-outline-danger"
-                          style={{ fontSize: '0.8rem', padding: '4px 10px' }}
-                          disabled={loading}
-                        >
-                          Remove
-                        </button>
+                        <div style={{ display: 'flex', gap: '4px', justifyContent: 'flex-end' }}>
+                          <button
+                            onClick={() => startEdit(d)}
+                            className="btn btn-secondary"
+                            style={{ fontSize: '0.8rem', padding: '4px 10px' }}
+                            disabled={loading}
+                          >
+                            Edit
+                          </button>
+                          <button
+                            onClick={() => handleRemoveDefault(d.id)}
+                            className="btn btn-outline-danger"
+                            style={{ fontSize: '0.8rem', padding: '4px 10px' }}
+                            disabled={loading}
+                          >
+                            Remove
+                          </button>
+                        </div>
                       </td>
                     </tr>
                   ))}
@@ -258,14 +313,9 @@ export default function PrivacySettings({ onToast }: PrivacySettingsProps) {
             </p>
           )}
 
-          {!showDefaultForm ? (
+          {!showForm ? (
             <button
-              onClick={() => {
-                if (otherMembers.length > 0) {
-                  setDefaultRecipientId(otherMembers[0].id);
-                }
-                setShowDefaultForm(true);
-              }}
+              onClick={startAdd}
               className="btn btn-secondary"
               disabled={loading || !hasPassword}
               title={!hasPassword ? 'Enable password protection first' : undefined}
@@ -273,22 +323,24 @@ export default function PrivacySettings({ onToast }: PrivacySettingsProps) {
               + Add Rule
             </button>
           ) : (
-            <form onSubmit={handleAddDefault} style={{
+            <form onSubmit={handleSubmit} style={{
               backgroundColor: 'var(--color-bg-secondary)',
               padding: '20px',
               borderRadius: '8px',
               border: '1px solid var(--color-border)',
             }}>
-              <h4 style={{ marginTop: 0, marginBottom: '16px' }}>Add Sharing Rule</h4>
+              <h4 style={{ marginTop: 0, marginBottom: '16px' }}>
+                {editingId ? 'Edit Sharing Rule' : 'Add Sharing Rule'}
+              </h4>
 
               <div style={{ marginBottom: '16px' }}>
                 <label style={{ display: 'block', marginBottom: '4px', fontWeight: 500 }}>
                   Recipient
                 </label>
                 <select
-                  value={defaultRecipientId}
-                  onChange={(e) => setDefaultRecipientId(e.target.value)}
-                  disabled={loading}
+                  value={formRecipientId}
+                  onChange={(e) => setFormRecipientId(e.target.value)}
+                  disabled={loading || !!editingId}
                   style={{ width: '100%' }}
                 >
                   {otherMembers.map(u => (
@@ -302,12 +354,12 @@ export default function PrivacySettings({ onToast }: PrivacySettingsProps) {
                   Entity Type
                 </label>
                 <select
-                  value={defaultEntityType}
-                  onChange={(e) => setDefaultEntityType(e.target.value as EncryptableEntityType)}
+                  value={formEntityType}
+                  onChange={(e) => setFormEntityType(e.target.value as SharingEntityType)}
                   disabled={loading}
                   style={{ width: '100%' }}
                 >
-                  {ENTITY_TYPES.map(et => (
+                  {ENTITY_TYPE_OPTIONS.map(et => (
                     <option key={et.value} value={et.value}>{et.label}</option>
                   ))}
                 </select>
@@ -321,8 +373,8 @@ export default function PrivacySettings({ onToast }: PrivacySettingsProps) {
                   <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
                     <input
                       type="checkbox"
-                      checked={defaultPermView}
-                      onChange={(e) => setDefaultPermView(e.target.checked)}
+                      checked={formPermView}
+                      onChange={(e) => setFormPermView(e.target.checked)}
                       disabled={loading}
                     />
                     <span>View — see shared items</span>
@@ -330,8 +382,8 @@ export default function PrivacySettings({ onToast }: PrivacySettingsProps) {
                   <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
                     <input
                       type="checkbox"
-                      checked={defaultPermCombine}
-                      onChange={(e) => setDefaultPermCombine(e.target.checked)}
+                      checked={formPermCombine}
+                      onChange={(e) => setFormPermCombine(e.target.checked)}
                       disabled={loading}
                     />
                     <span>Combine — include in household totals</span>
@@ -339,8 +391,8 @@ export default function PrivacySettings({ onToast }: PrivacySettingsProps) {
                   <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
                     <input
                       type="checkbox"
-                      checked={defaultPermReports}
-                      onChange={(e) => setDefaultPermReports(e.target.checked)}
+                      checked={formPermReports}
+                      onChange={(e) => setFormPermReports(e.target.checked)}
                       disabled={loading}
                     />
                     <span>Reports — include in reports and analytics</span>
@@ -350,11 +402,11 @@ export default function PrivacySettings({ onToast }: PrivacySettingsProps) {
 
               <div style={{ display: 'flex', gap: '8px' }}>
                 <button type="submit" className="btn btn-primary" disabled={loading}>
-                  {loading ? 'Adding...' : 'Add Rule'}
+                  {loading ? 'Saving...' : editingId ? 'Save Changes' : 'Add Rule'}
                 </button>
                 <button
                   type="button"
-                  onClick={resetDefaultForm}
+                  onClick={resetForm}
                   className="btn btn-secondary"
                   disabled={loading}
                 >

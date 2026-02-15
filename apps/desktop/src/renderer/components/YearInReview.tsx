@@ -308,7 +308,7 @@ const YearInReview: React.FC = () => {
                     <span style={{ fontWeight: 500, fontSize: '14px' }}>{cat.categoryName}</span>
                     <span style={{ fontWeight: 600, fontSize: '14px' }}>{formatCents(cat.total)}</span>
                   </div>
-                  <div style={{ height: '6px', backgroundColor: 'var(--color-bg)', borderRadius: '3px' }}>
+                  <div style={{ height: '6px', backgroundColor: 'var(--color-bg)', borderRadius: '3px', width: '100%', maxWidth: '100%', overflow: 'hidden' }}>
                     <div style={{ height: '100%', width: `${barWidth}%`, backgroundColor: cat.color || 'var(--color-primary)', borderRadius: '3px' }} />
                   </div>
                 </div>

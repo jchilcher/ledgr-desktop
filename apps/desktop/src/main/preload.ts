@@ -34,6 +34,7 @@ import {
   AssetValueHistory,
   LiabilityValueHistory,
   EncryptableEntityType,
+  SharingEntityType,
   SharePermissions,
 } from '../shared/types';
 import { NetWorthProjectionConfig } from '@ledgr/core';
@@ -1166,6 +1167,7 @@ contextBridge.exposeInMainWorld('api', {
       ipcRenderer.invoke('security:unlockMember', userId, password),
     unlockMemberStartup: (userId: string, password: string | null) =>
       ipcRenderer.invoke('security:unlockMemberStartup', userId, password),
+    getCurrentUser: () => ipcRenderer.invoke('security:getCurrentUser'),
     onLock: (callback: () => void) => {
       const handler = () => callback();
       ipcRenderer.on('app:lock', handler);
@@ -1240,9 +1242,61 @@ contextBridge.exposeInMainWorld('api', {
       ipcRenderer.invoke('sharing:getSharedWithMe'),
     getDefaults: (ownerId: string, entityType?: EncryptableEntityType) =>
       ipcRenderer.invoke('sharing:getDefaults', ownerId, entityType),
-    setDefault: (ownerId: string, recipientId: string, entityType: EncryptableEntityType, permissions: SharePermissions) =>
+    setDefault: (ownerId: string, recipientId: string, entityType: SharingEntityType, permissions: SharePermissions) =>
       ipcRenderer.invoke('sharing:setDefault', ownerId, recipientId, entityType, permissions),
+    updateDefault: (defaultId: string, updates: { entityType?: SharingEntityType; permissions?: SharePermissions }) =>
+      ipcRenderer.invoke('sharing:updateDefault', defaultId, updates),
     removeDefault: (defaultId: string) =>
       ipcRenderer.invoke('sharing:removeDefault', defaultId),
+  },
+
+  // ==================== Safe to Spend ====================
+  safeToSpend: {
+    calculate: () => ipcRenderer.invoke('safeToSpend:calculate'),
+  },
+
+  // ==================== Age of Money ====================
+  ageOfMoney: {
+    calculate: () => ipcRenderer.invoke('ageOfMoney:calculate'),
+  },
+
+  // ==================== Tax Lot Reports ====================
+  taxLotReport: {
+    generate: (taxYear: number) => ipcRenderer.invoke('taxLotReport:generate', taxYear),
+    exportCSV: (taxYear: number) => ipcRenderer.invoke('taxLotReport:exportCSV', taxYear),
+  },
+
+  // ==================== Enhanced Automation Rules ====================
+  automationActions: {
+    getForRule: (ruleId: string) => ipcRenderer.invoke('automationActions:getForRule', ruleId),
+    create: (action: { ruleId: string; actionType: string; actionValue: string | null }) =>
+      ipcRenderer.invoke('automationActions:create', action),
+    delete: (id: string) => ipcRenderer.invoke('automationActions:delete', id),
+    getEnhancedRules: () => ipcRenderer.invoke('automationActions:getEnhancedRules'),
+    updateRuleConditions: (id: string, conditions: {
+      amountMin?: number | null;
+      amountMax?: number | null;
+      accountFilter?: string[] | null;
+      directionFilter?: 'income' | 'expense' | null;
+    }) => ipcRenderer.invoke('automationActions:updateRuleConditions', id, conditions),
+  },
+
+  // ==================== Paycheck-Based Budgeting ====================
+  paycheckAllocations: {
+    getAll: () => ipcRenderer.invoke('paycheckAllocations:getAll'),
+    getByStream: (incomeStreamId: string) =>
+      ipcRenderer.invoke('paycheckAllocations:getByStream', incomeStreamId),
+    create: (allocation: {
+      incomeStreamId: string;
+      incomeDescription: string;
+      allocationType: string;
+      targetId: string;
+      amount: number;
+    }) => ipcRenderer.invoke('paycheckAllocations:create', allocation),
+    update: (id: string, updates: { amount?: number }) =>
+      ipcRenderer.invoke('paycheckAllocations:update', id, updates),
+    delete: (id: string) => ipcRenderer.invoke('paycheckAllocations:delete', id),
+    getBudgetView: (incomeStreamId: string) =>
+      ipcRenderer.invoke('paycheckAllocations:getBudgetView', incomeStreamId),
   },
 });

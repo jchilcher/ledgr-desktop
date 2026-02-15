@@ -46,7 +46,7 @@ Refunds are subject to Google Play's refund policy.
 
 ## 9. Governing Law
 
-This Agreement shall be governed by the laws of the State of Oregon, United States, without regard to its conflict of law provisions.
+This Agreement shall be governed by the laws of the State of Arizona, United States, without regard to its conflict of law provisions.
 
 ## 10. Contact
 

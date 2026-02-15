@@ -80,4 +80,4 @@ We may update this policy from time to time. Changes will be posted to this file
 
 - **Privacy inquiries:** [privacy@techloom.it](mailto:privacy@techloom.it)
 - **General support:** [support@techloom.it](mailto:support@techloom.it)
-- **GitHub Issues:** [github.com/jchilcher/ledgr/issues](https://github.com/jchilcher/ledgr/issues)
+- **GitHub Issues:** [github.com/jchilcher/ledgr-desktop/issues](https://github.com/jchilcher/ledgr-desktop/issues)

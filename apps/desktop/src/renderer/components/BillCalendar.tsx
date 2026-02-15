@@ -332,6 +332,7 @@ const BillCalendar: React.FC = () => {
   };
 
   const formatCurrency = (amount: number) => {
+    if (amount == null || isNaN(amount)) return '$0';
     return new Intl.NumberFormat('en-US', {
       style: 'currency',
       currency: 'USD',
@@ -341,7 +342,16 @@ const BillCalendar: React.FC = () => {
 
   const formatDate = (date: Date | string | null) => {
     if (!date) return 'N/A';
-    return new Date(date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+    let d: Date;
+    if (date instanceof Date) {
+      d = date;
+    } else if (/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+      const [y, m, day] = date.split('-').map(Number);
+      d = new Date(y, m - 1, day);
+    } else {
+      d = new Date(date);
+    }
+    return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
   };
 
   const formatFullDate = (date: Date) => {

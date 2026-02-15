@@ -62,7 +62,8 @@ export function decryptEntityFields(entityType: string, data: Record<string, any
           result[field] = decryptField(envelope.c, envelope.iv, envelope.tag, dek);
         }
       } catch {
-        // Not encrypted or not valid JSON — leave as-is
+        console.warn(`[Encryption] Failed to decrypt ${entityType}.${field}, defaulting to ''`);
+        result[field] = '';
       }
     }
   }
@@ -75,7 +76,8 @@ export function decryptEntityFields(entityType: string, data: Record<string, any
           result[field] = decryptNumber(envelope.c, envelope.iv, envelope.tag, dek);
         }
       } catch {
-        // Not encrypted or not valid JSON — leave as-is
+        console.warn(`[Encryption] Failed to decrypt ${entityType}.${field}, defaulting to 0`);
+        result[field] = 0;
       }
     }
   }
@@ -152,8 +154,9 @@ export function decryptEntityList(
     const dek = getDecryptionDEK(db, entityType, item.id, ownerId, currentUserId);
     if (dek) {
       result.push(decryptEntityFields(entityType, item, dek));
+    } else {
+      console.warn(`[Encryption] Could not get DEK for ${entityType} ${item.id}, excluding from results`);
     }
-    // If we can't decrypt, exclude it from results
   }
 
   return result;

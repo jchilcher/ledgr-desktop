@@ -15,7 +15,10 @@ describe('ForecastEngine', () => {
     }
 
     db = new BudgetDatabase(dbPath);
-    engine = new ForecastEngine(db);
+    engine = new ForecastEngine({
+      getTransactions: () => db.getTransactions(),
+      getCategories: () => db.getCategories(),
+    });
   });
 
   afterEach(() => {

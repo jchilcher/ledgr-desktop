@@ -53,6 +53,36 @@ describe('CashFlowEngine', () => {
 
       expect(nextDate.getTime()).toBe(new Date('2027-01-15').getTime());
     });
+
+    it('should calculate next occurrence for biweekly frequency', () => {
+      const currentDate = new Date('2026-02-13');
+      const nextDate = engine.calculateNextOccurrence(currentDate, 'biweekly');
+
+      expect(nextDate.getTime()).toBe(new Date('2026-02-27').getTime());
+    });
+
+    it('should preserve day-of-week across month boundaries for biweekly', () => {
+      // Feb 13 2026 is a Friday — biweekly should land on Friday Feb 27, then Friday Mar 13
+      const feb13 = new Date('2026-02-13');
+      expect(feb13.getUTCDay()).toBe(5); // Friday
+
+      const feb27 = engine.calculateNextOccurrence(feb13, 'biweekly');
+      expect(feb27.getUTCDay()).toBe(5); // Still Friday
+      expect(feb27.getTime()).toBe(new Date('2026-02-27').getTime());
+
+      const mar13 = engine.calculateNextOccurrence(feb27, 'biweekly');
+      expect(mar13.getUTCDay()).toBe(5); // Still Friday
+      expect(mar13.getTime()).toBe(new Date('2026-03-13').getTime());
+    });
+
+    it('should handle biweekly across year boundary', () => {
+      // Dec 26 2025 is a Friday
+      const dec26 = new Date('2025-12-26');
+      const jan9 = engine.calculateNextOccurrence(dec26, 'biweekly');
+
+      expect(jan9.getTime()).toBe(new Date('2026-01-09').getTime());
+      expect(jan9.getUTCDay()).toBe(dec26.getUTCDay()); // Same day of week
+    });
   });
 
   describe('Recurring Transactions Projection', () => {

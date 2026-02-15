@@ -12,6 +12,7 @@ import {
 import {
   NetWorthSnapshot,
 } from '../shared/types';
+import { decryptEntityList } from './encryption-middleware';
 
 // Re-export types from core
 export {
@@ -37,9 +38,14 @@ export {
  */
 export class NetWorthEngine {
   private service: NetWorthService;
+  private currentUserId: string | null = null;
 
   constructor(private db: BudgetDatabase) {
     this.service = new NetWorthService();
+  }
+
+  setCurrentUserId(userId: string | null): void {
+    this.currentUserId = userId;
   }
 
   /**
@@ -161,10 +167,15 @@ export class NetWorthEngine {
    * @returns Loan payoff calculation with amortization schedule
    */
   calculateLoanPayoff(liabilityId: string): LoanPayoffCalculation {
-    const liability = this.db.getManualLiabilityById(liabilityId);
+    const rawLiability = this.db.getManualLiabilityById(liabilityId);
 
-    if (!liability) {
+    if (!rawLiability) {
       throw new Error(`Liability not found: ${liabilityId}`);
+    }
+
+    const [liability] = decryptEntityList(this.db, 'manual_liability', [rawLiability], this.currentUserId);
+    if (!liability) {
+      throw new Error(`Cannot decrypt liability: ${liabilityId}`);
     }
 
     if (!liability.interestRate || !liability.monthlyPayment) {
@@ -200,7 +211,7 @@ export class NetWorthEngine {
    * Private: Converts bank accounts to NetWorthComponent array
    */
   private getBankAccountComponents(): NetWorthComponent[] {
-    const accounts = this.db.getAccounts();
+    const accounts = decryptEntityList(this.db, 'account', this.db.getAccounts(), this.currentUserId);
 
     return accounts.map(account => ({
       id: account.id,
@@ -238,7 +249,7 @@ export class NetWorthEngine {
    * Private: Converts manual assets to NetWorthComponent array
    */
   private getManualAssetComponents(): NetWorthComponent[] {
-    const assets = this.db.getManualAssets();
+    const assets = decryptEntityList(this.db, 'manual_asset', this.db.getManualAssets(), this.currentUserId);
 
     return assets.map(asset => ({
       id: asset.id,
@@ -253,7 +264,7 @@ export class NetWorthEngine {
    * Private: Converts manual liabilities to NetWorthComponent array
    */
   private getManualLiabilityComponents(): NetWorthComponent[] {
-    const liabilities = this.db.getManualLiabilities();
+    const liabilities = decryptEntityList(this.db, 'manual_liability', this.db.getManualLiabilities(), this.currentUserId);
 
     return liabilities.map(liability => ({
       id: liability.id,

@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { Investment, InvestmentType, InvestmentSettings } from '../../shared/types';
 import { AllocationChart } from './AllocationChart';
 import { ConcentrationWarning, ConcentrationBadge, ConcentrationSettings } from './ConcentrationWarning';
+import TaxLotReport from './TaxLotReport';
 
 const investmentTypeLabels: Record<InvestmentType, string> = {
   stock: 'Stock',
@@ -12,7 +13,10 @@ const investmentTypeLabels: Record<InvestmentType, string> = {
   other: 'Other',
 };
 
+type InvestmentTab = 'holdings' | 'tax-reports';
+
 export function Investments() {
+  const [activeTab, setActiveTab] = useState<InvestmentTab>('holdings');
   const [investments, setInvestments] = useState<Investment[]>([]);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [showForm, setShowForm] = useState(false);
@@ -135,187 +139,212 @@ export function Investments() {
       <div className="investments-header">
         <h3>Investments</h3>
         <div className="header-actions">
-          <button
-            onClick={() => setShowAllocation(!showAllocation)}
-            className={`allocation-btn ${showAllocation ? 'active' : ''}`}
-          >
-            {showAllocation ? 'Hide Allocation' : 'Show Allocation'}
-          </button>
-          <button onClick={() => setShowForm(true)} className="add-btn">
-            Add Investment
-          </button>
+          {activeTab === 'holdings' && (
+            <>
+              <button
+                onClick={() => setShowAllocation(!showAllocation)}
+                className={`allocation-btn ${showAllocation ? 'active' : ''}`}
+              >
+                {showAllocation ? 'Hide Allocation' : 'Show Allocation'}
+              </button>
+              <button onClick={() => setShowForm(true)} className="add-btn">
+                Add Investment
+              </button>
+            </>
+          )}
         </div>
       </div>
 
-      <div className="investments-summary">
-        <div className="summary-item">
-          <span className="label">Total Value</span>
-          <span className="value">${totalValue.toLocaleString('en-US', { minimumFractionDigits: 2 })}</span>
-        </div>
-        <div className="summary-item">
-          <span className="label">Total Gain/Loss</span>
-          <span className={`value ${totalGain >= 0 ? 'positive' : 'negative'}`}>
-            {totalGain >= 0 ? '+' : ''}${totalGain.toLocaleString('en-US', { minimumFractionDigits: 2 })}
-          </span>
-        </div>
+      <div className="investments-tabs">
+        <button
+          className={`tab ${activeTab === 'holdings' ? 'active' : ''}`}
+          onClick={() => setActiveTab('holdings')}
+        >
+          Holdings
+        </button>
+        <button
+          className={`tab ${activeTab === 'tax-reports' ? 'active' : ''}`}
+          onClick={() => setActiveTab('tax-reports')}
+        >
+          Tax Reports
+        </button>
       </div>
 
-      <ConcentrationWarning
-        investments={investments}
-        onSettingsClick={() => setShowConcentrationSettings(true)}
-      />
+{activeTab === 'holdings' ? (
+        <>
+          <div className="investments-summary">
+            <div className="summary-item">
+              <span className="label">Total Value</span>
+              <span className="value">${totalValue.toLocaleString('en-US', { minimumFractionDigits: 2 })}</span>
+            </div>
+            <div className="summary-item">
+              <span className="label">Total Gain/Loss</span>
+              <span className={`value ${totalGain >= 0 ? 'positive' : 'negative'}`}>
+                {totalGain >= 0 ? '+' : ''}${totalGain.toLocaleString('en-US', { minimumFractionDigits: 2 })}
+              </span>
+            </div>
+          </div>
 
-      {showAllocation && (
-        <AllocationChart
-          investments={investments}
-          onDrillDown={() => {
-            // Could filter investments list or show detail view
-          }}
-        />
-      )}
+          <ConcentrationWarning
+            investments={investments}
+            onSettingsClick={() => setShowConcentrationSettings(true)}
+          />
 
-      {showForm && (
-        <form onSubmit={handleSubmit} className="investment-form">
-          <div className="form-group">
-            <label>Name</label>
-            <input
-              type="text"
-              placeholder="Name"
-              value={formData.name}
-              onChange={e => setFormData({ ...formData, name: e.target.value })}
-              required
+          {showAllocation && (
+            <AllocationChart
+              investments={investments}
+              onDrillDown={() => {
+                // Could filter investments list or show detail view
+              }}
             />
-          </div>
+          )}
 
-          <div className="form-group">
-            <label>Ticker Symbol</label>
-            <input
-              type="text"
-              placeholder="ticker"
-              value={formData.ticker}
-              onChange={e => setFormData({ ...formData, ticker: e.target.value.toUpperCase() })}
-            />
-          </div>
+          {showForm && (
+            <form onSubmit={handleSubmit} className="investment-form">
+              <div className="form-group">
+                <label>Name</label>
+                <input
+                  type="text"
+                  placeholder="Name"
+                  value={formData.name}
+                  onChange={e => setFormData({ ...formData, name: e.target.value })}
+                  required
+                />
+              </div>
 
-          <div className="form-group">
-            <label>Type</label>
-            <select
-              value={formData.type}
-              onChange={e => setFormData({ ...formData, type: e.target.value as InvestmentType })}
-            >
-              {Object.entries(investmentTypeLabels).map(([value, label]) => (
-                <option key={value} value={value}>{label}</option>
-              ))}
-            </select>
-          </div>
+              <div className="form-group">
+                <label>Ticker Symbol</label>
+                <input
+                  type="text"
+                  placeholder="ticker"
+                  value={formData.ticker}
+                  onChange={e => setFormData({ ...formData, ticker: e.target.value.toUpperCase() })}
+                />
+              </div>
 
-          <div className="form-row">
-            <div className="form-group">
-              <label>Shares</label>
-              <input
-                type="number"
-                placeholder="shares"
-                value={formData.shares || ''}
-                onChange={e => setFormData({ ...formData, shares: parseFloat(e.target.value) || 0 })}
-                step="0.0001"
-                required
-              />
-            </div>
+              <div className="form-group">
+                <label>Type</label>
+                <select
+                  value={formData.type}
+                  onChange={e => setFormData({ ...formData, type: e.target.value as InvestmentType })}
+                >
+                  {Object.entries(investmentTypeLabels).map(([value, label]) => (
+                    <option key={value} value={value}>{label}</option>
+                  ))}
+                </select>
+              </div>
 
-            <div className="form-group">
-              <label>Cost Basis (per share)</label>
-              <input
-                type="number"
-                placeholder="cost"
-                value={formData.costBasis || ''}
-                onChange={e => setFormData({ ...formData, costBasis: parseFloat(e.target.value) || 0 })}
-                step="0.01"
-                required
-              />
-            </div>
-
-            <div className="form-group">
-              <label>Current Price</label>
-              <input
-                type="number"
-                placeholder="price"
-                value={formData.currentPrice || ''}
-                onChange={e => setFormData({ ...formData, currentPrice: parseFloat(e.target.value) || 0 })}
-                step="0.01"
-                required
-              />
-            </div>
-          </div>
-
-          <div className="form-actions">
-            <button type="submit">{editingId ? 'Update' : 'Create'}</button>
-            <button type="button" onClick={resetForm}>Cancel</button>
-          </div>
-        </form>
-      )}
-
-      <div className="investments-list">
-        {investments.length === 0 ? (
-          <p className="empty-state">No investments yet. Add your first investment to start tracking.</p>
-        ) : (
-          investments.map(inv => {
-            const value = calculateValue(inv);
-            const gain = calculateGain(inv);
-            const gainPercent = calculateGainPercent(inv);
-
-            return (
-              <div key={inv.id} className="investment-card">
-                <div className="investment-header">
-                  <div className="investment-name">
-                    <strong>{inv.name}</strong>
-                    {inv.ticker && <span className="ticker">{inv.ticker}</span>}
-                  </div>
-                  <span className="investment-type">{investmentTypeLabels[inv.type]}</span>
+              <div className="form-row">
+                <div className="form-group">
+                  <label>Shares</label>
+                  <input
+                    type="number"
+                    placeholder="shares"
+                    value={formData.shares || ''}
+                    onChange={e => setFormData({ ...formData, shares: parseFloat(e.target.value) || 0 })}
+                    step="0.0001"
+                    required
+                  />
                 </div>
 
-                <div className="investment-details">
-                  <div className="detail">
-                    <span className="label">Shares</span>
-                    <span className="value">{inv.shares.toLocaleString()}</span>
-                  </div>
-                  <div className="detail">
-                    <span className="label">Current Price</span>
-                    <span className="value">${inv.currentPrice.toFixed(2)}</span>
-                  </div>
-                  <div className="detail">
-                    <span className="label">Value</span>
-                    <div className="value-with-badge">
-                      <span className="value">${value.toLocaleString('en-US', { minimumFractionDigits: 2 })}</span>
-                      <ConcentrationBadge
-                        percentage={getPositionPercentage(inv)}
-                        threshold={settings?.concentrationThreshold ?? 25}
-                      />
-                    </div>
-                  </div>
-                  <div className="detail">
-                    <span className="label">Gain/Loss</span>
-                    <span className={`value ${gain >= 0 ? 'positive' : 'negative'}`}>
-                      {gain >= 0 ? '+' : ''}${gain.toFixed(2)} ({gainPercent.toFixed(2)}%)
-                    </span>
-                  </div>
+                <div className="form-group">
+                  <label>Cost Basis (per share)</label>
+                  <input
+                    type="number"
+                    placeholder="cost"
+                    value={formData.costBasis || ''}
+                    onChange={e => setFormData({ ...formData, costBasis: parseFloat(e.target.value) || 0 })}
+                    step="0.01"
+                    required
+                  />
                 </div>
 
-                <div className="investment-actions">
-                  <button onClick={() => handleEdit(inv)}>Edit</button>
-                  <button onClick={() => handleDelete(inv.id)} className="delete-btn">Delete</button>
+                <div className="form-group">
+                  <label>Current Price</label>
+                  <input
+                    type="number"
+                    placeholder="price"
+                    value={formData.currentPrice || ''}
+                    onChange={e => setFormData({ ...formData, currentPrice: parseFloat(e.target.value) || 0 })}
+                    step="0.01"
+                    required
+                  />
                 </div>
               </div>
-            );
-          })
-        )}
-      </div>
 
-      <ConcentrationSettings
-        isOpen={showConcentrationSettings}
-        onClose={() => setShowConcentrationSettings(false)}
-        onSave={handleSettingsSaved}
-        currentThreshold={settings?.concentrationThreshold ?? 25}
-      />
+              <div className="form-actions">
+                <button type="submit">{editingId ? 'Update' : 'Create'}</button>
+                <button type="button" onClick={resetForm}>Cancel</button>
+              </div>
+            </form>
+          )}
+
+          <div className="investments-list">
+            {investments.length === 0 ? (
+              <p className="empty-state">No investments yet. Add your first investment to start tracking.</p>
+            ) : (
+              investments.map(inv => {
+                const value = calculateValue(inv);
+                const gain = calculateGain(inv);
+                const gainPercent = calculateGainPercent(inv);
+
+                return (
+                  <div key={inv.id} className="investment-card">
+                    <div className="investment-header">
+                      <div className="investment-name">
+                        <strong>{inv.name}</strong>
+                        {inv.ticker && <span className="ticker">{inv.ticker}</span>}
+                      </div>
+                      <span className="investment-type">{investmentTypeLabels[inv.type]}</span>
+                    </div>
+
+                    <div className="investment-details">
+                      <div className="detail">
+                        <span className="label">Shares</span>
+                        <span className="value">{inv.shares.toLocaleString()}</span>
+                      </div>
+                      <div className="detail">
+                        <span className="label">Current Price</span>
+                        <span className="value">${inv.currentPrice.toFixed(2)}</span>
+                      </div>
+                      <div className="detail">
+                        <span className="label">Value</span>
+                        <div className="value-with-badge">
+                          <span className="value">${value.toLocaleString('en-US', { minimumFractionDigits: 2 })}</span>
+                          <ConcentrationBadge
+                            percentage={getPositionPercentage(inv)}
+                            threshold={settings?.concentrationThreshold ?? 25}
+                          />
+                        </div>
+                      </div>
+                      <div className="detail">
+                        <span className="label">Gain/Loss</span>
+                        <span className={`value ${gain >= 0 ? 'positive' : 'negative'}`}>
+                          {gain >= 0 ? '+' : ''}${gain.toFixed(2)} ({gainPercent.toFixed(2)}%)
+                        </span>
+                      </div>
+                    </div>
+
+                    <div className="investment-actions">
+                      <button onClick={() => handleEdit(inv)}>Edit</button>
+                      <button onClick={() => handleDelete(inv.id)} className="delete-btn">Delete</button>
+                    </div>
+                  </div>
+                );
+              })
+            )}
+          </div>
+
+          <ConcentrationSettings
+            isOpen={showConcentrationSettings}
+            onClose={() => setShowConcentrationSettings(false)}
+            onSave={handleSettingsSaved}
+            currentThreshold={settings?.concentrationThreshold ?? 25}
+          />
+        </>
+      ) : (
+        <TaxLotReport />
+      )}
     </div>
   );
 }
