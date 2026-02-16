@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import WhatsNewModal from './WhatsNewModal';
 
 type UpdateState = 'idle' | 'checking' | 'available' | 'downloading' | 'downloaded' | 'error';
 
@@ -14,12 +15,26 @@ interface DownloadProgress {
   total: number;
 }
 
+function normalizeReleaseNotes(notes: unknown): string {
+  if (!notes) return '';
+  if (typeof notes === 'string') return notes;
+  if (Array.isArray(notes)) {
+    return notes
+      .map((n: { version?: string; note?: string }) =>
+        `<h3>${n.version ?? ''}</h3>${n.note ?? ''}`
+      )
+      .join('');
+  }
+  return '';
+}
+
 export default function UpdateNotification() {
   const [state, setState] = useState<UpdateState>('idle');
   const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null);
   const [progress, setProgress] = useState<number>(0);
   const [errorMessage, setErrorMessage] = useState<string>('');
   const [isVisible, setIsVisible] = useState<boolean>(false);
+  const [showWhatsNew, setShowWhatsNew] = useState(false);
 
   useEffect(() => {
     // Register IPC event listeners
@@ -27,6 +42,17 @@ export default function UpdateNotification() {
       setUpdateInfo(info);
       setState('available');
       setIsVisible(true);
+
+      // Persist release notes for post-update modal
+      const html = normalizeReleaseNotes(info.releaseNotes);
+      if (html) {
+        try {
+          localStorage.setItem(
+            'ledgr:pendingUpdateNotes',
+            JSON.stringify({ version: info.version, releaseNotes: html })
+          );
+        } catch { /* localStorage full — non-critical */ }
+      }
 
       // Auto-dismiss after 15 seconds if user doesn't interact
       const timeout = setTimeout(() => {
@@ -111,6 +137,11 @@ export default function UpdateNotification() {
             <button onClick={handleDownload} className="btn btn-primary btn-sm">
               Download
             </button>
+            {updateInfo.releaseNotes && (
+              <button onClick={() => setShowWhatsNew(true)} className="btn-link btn-sm">
+                What&apos;s New
+              </button>
+            )}
             <button onClick={handleDismiss} className="btn btn-ghost btn-sm">
               Later
             </button>
@@ -160,6 +191,14 @@ export default function UpdateNotification() {
             </p>
           </div>
         </>
+      )}
+
+      {showWhatsNew && updateInfo?.releaseNotes && (
+        <WhatsNewModal
+          version={updateInfo.version}
+          releaseNotes={normalizeReleaseNotes(updateInfo.releaseNotes)}
+          onClose={() => setShowWhatsNew(false)}
+        />
       )}
     </div>
   );

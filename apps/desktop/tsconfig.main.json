@@ -23,5 +23,5 @@
     }
   },
   "include": ["src/main/**/*", "src/shared/**/*", "src/scripts/**/*"],
-  "exclude": ["node_modules", "dist"]
+  "exclude": ["node_modules", "dist", "src/main/__tests__/**"]
 }

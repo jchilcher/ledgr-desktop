@@ -1,7 +1,7 @@
 import { app } from 'electron';
-import fsAsync from 'fs/promises';
-import fsSync from 'fs';
-import path from 'path';
+import * as fsAsync from 'fs/promises';
+import * as fsSync from 'fs';
+import * as path from 'path';
 import BetterSqlite3 = require('better-sqlite3');
 import { CURRENT_SCHEMA_VERSION } from '@ledgr/db';
 

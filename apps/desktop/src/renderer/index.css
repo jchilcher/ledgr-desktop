@@ -3132,6 +3132,89 @@ select option {
   margin: 0;
 }
 
+/* What's New Modal */
+.whats-new-modal {
+  position: relative;
+  background: var(--color-surface);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg);
+  max-width: 560px;
+  width: 90%;
+  padding: 32px;
+  animation: scaleIn 0.2s ease;
+}
+
+.whats-new-content {
+  max-height: 60vh;
+  overflow-y: auto;
+  padding-right: 8px;
+  line-height: 1.6;
+  font-size: 0.95rem;
+  color: var(--color-text);
+}
+
+.whats-new-content h1,
+.whats-new-content h2,
+.whats-new-content h3 {
+  margin: 16px 0 8px 0;
+  color: var(--color-text);
+}
+
+.whats-new-content h1 { font-size: 1.2rem; }
+.whats-new-content h2 { font-size: 1.1rem; }
+.whats-new-content h3 { font-size: 1rem; }
+
+.whats-new-content p {
+  margin: 8px 0;
+}
+
+.whats-new-content ul,
+.whats-new-content ol {
+  padding-left: 24px;
+  margin: 8px 0;
+}
+
+.whats-new-content li {
+  margin: 4px 0;
+}
+
+.whats-new-content a {
+  color: var(--color-primary);
+  text-decoration: none;
+}
+
+.whats-new-content a:hover {
+  text-decoration: underline;
+}
+
+.whats-new-content strong {
+  color: var(--color-text);
+}
+
+.whats-new-content code {
+  background: var(--color-bg);
+  padding: 2px 6px;
+  border-radius: var(--radius-sm);
+  font-size: 0.9em;
+}
+
+.whats-new-content::-webkit-scrollbar {
+  width: 6px;
+}
+
+.whats-new-content::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.whats-new-content::-webkit-scrollbar-thumb {
+  background: var(--color-border);
+  border-radius: 3px;
+}
+
+.whats-new-content::-webkit-scrollbar-thumb:hover {
+  background: var(--color-text-muted);
+}
+
 /* Button link style */
 .btn-link {
   background: none;

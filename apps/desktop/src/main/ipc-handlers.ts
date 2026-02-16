@@ -1,7 +1,7 @@
 import { ipcMain, dialog, BrowserWindow, app, shell } from 'electron';
 import fs from 'fs';
-import { randomUUID } from 'crypto';
-import crypto from 'node:crypto';
+import { randomUUID } from 'node:crypto';
+import * as crypto from 'crypto';
 import { BudgetDatabase } from './database';
 import { exportDatabase } from './database-export';
 import {
@@ -413,6 +413,21 @@ export class IPCHandlers {
     this.currentUserId = userId;
     this.netWorthEngine.setCurrentUserId(userId);
     this.cashFlowEngine.setCurrentUserId(userId);
+    this.syncAllPinnedGoals();
+  }
+
+  /**
+   * Sync all pinned savings goals with their linked account balances.
+   * Runs at the IPC layer (after user login) so encryption is handled properly.
+   */
+  private syncAllPinnedGoals(): void {
+    const pinnedGoals = this.db.rawDb.prepare(
+      'SELECT id FROM savings_goals WHERE accountId IS NOT NULL AND isActive = 1'
+    ).all() as Array<{ id: string }>;
+
+    for (const row of pinnedGoals) {
+      this.syncSavingsGoalBalance(row.id);
+    }
   }
 
   private decryptTransactionsList(transactions: Transaction[]): Transaction[] {
@@ -428,6 +443,42 @@ export class IPCHandlers {
       }
       return decrypted;
     });
+  }
+
+  /**
+   * Sync a pinned savings goal's currentAmount with its account's decrypted balance.
+   * Must be called at the IPC layer (not database layer) so we can decrypt first.
+   */
+  private syncSavingsGoalBalance(goalId: string): void {
+    const goal = this.db.getSavingsGoalById(goalId);
+    if (!goal || !goal.accountId) return;
+
+    const account = this.db.getAccountById(goal.accountId);
+    if (!account) return;
+
+    let balance = account.balance;
+
+    // Decrypt account balance if encrypted
+    if (account.isEncrypted && account.ownerId && this.currentUserId) {
+      const dek = getDecryptionDEK(this.db, 'account', account.id, account.ownerId, this.currentUserId);
+      if (dek) {
+        const decrypted = decryptEntityFields('account', account as unknown as Record<string, unknown>, dek);
+        balance = decrypted.balance as number;
+      }
+    }
+
+    // Re-encrypt currentAmount if savings goal is encrypted
+    if (goal.isEncrypted && goal.ownerId && this.currentUserId) {
+      const goalDek = getDecryptionDEK(this.db, 'savings_goal', goalId, goal.ownerId, this.currentUserId);
+      if (goalDek) {
+        const encrypted = encryptEntityFields('savings_goal', { currentAmount: balance }, goalDek);
+        this.db.rawDb.prepare('UPDATE savings_goals SET currentAmount = ? WHERE id = ?').run(encrypted.currentAmount, goalId);
+        return;
+      }
+    }
+
+    // Neither encrypted — update directly
+    this.db.updateSavingsGoal(goalId, { currentAmount: balance });
   }
 
   /** Set lock state (called from main.ts auto-lock timer) */
@@ -552,6 +603,14 @@ export class IPCHandlers {
     });
 
     secureHandle('accounts:delete', (_event, id: string) => {
+      const dekRecord = this.db.getDEK(id, 'account');
+      if (dekRecord) {
+        this.db.rawDb.prepare('DELETE FROM data_encryption_keys WHERE id = ? AND entityType = ?').run(id, 'account');
+      }
+      const shares = this.db.getSharesForEntity(id, 'account');
+      for (const share of shares) {
+        this.db.deleteShare(share.id);
+      }
       return this.db.deleteAccount(id);
     });
 
@@ -589,10 +648,11 @@ export class IPCHandlers {
 
     secureHandle('transactions:create', (_event, transaction: Omit<Transaction, 'id' | 'createdAt'>) => {
       const account = this.db.getAccountById(transaction.accountId);
+      let created: Transaction;
       if (account?.isEncrypted && account.ownerId && this.currentUserId) {
         const dek = getDecryptionDEK(this.db, 'account', account.id, account.ownerId, this.currentUserId);
         if (dek) {
-          const created = this.db.createTransaction(transaction);
+          created = this.db.createTransaction(transaction);
           const encrypted = encryptEntityFields('transaction', created as unknown as Record<string, unknown>, dek);
           const fields = ['description', 'notes', 'amount'];
           const setClauses: string[] = [];
@@ -607,10 +667,20 @@ export class IPCHandlers {
             values.push(created.id);
             this.db.rawDb.prepare(`UPDATE transactions SET ${setClauses.join(', ')} WHERE id = ?`).run(...values);
           }
-          return created;
+        } else {
+          created = this.db.createTransaction(transaction);
+        }
+      } else {
+        created = this.db.createTransaction(transaction);
+      }
+      // Sync pinned savings goal balance (at IPC layer for decryption access)
+      if (account?.type === 'savings') {
+        const goal = this.db.getSavingsGoalByAccountId(transaction.accountId);
+        if (goal) {
+          this.syncSavingsGoalBalance(goal.id);
         }
       }
-      return this.db.createTransaction(transaction);
+      return created;
     });
 
     secureHandle('transactions:update', (_event, id: string, updates: Partial<Omit<Transaction, 'id' | 'createdAt'>>) => {
@@ -1900,8 +1970,8 @@ export class IPCHandlers {
       // Retroactively create contributions from existing account transactions
       this.db.createContributionsFromAccountTransactions(goalId, accountId);
 
-      // Sync the goal's currentAmount with the account balance
-      this.db.syncSavingsGoalWithAccount(goalId);
+      // Sync the goal's currentAmount with the decrypted account balance
+      this.syncSavingsGoalBalance(goalId);
 
       // Mark all account transactions as internal transfers
       const transactions = this.db.getTransactionsByAccount(accountId);
@@ -1921,7 +1991,7 @@ export class IPCHandlers {
     });
 
     secureHandle('savingsGoals:syncWithAccount', (_event, goalId: string) => {
-      this.db.syncSavingsGoalWithAccount(goalId);
+      this.syncSavingsGoalBalance(goalId);
       return this.db.getSavingsGoalById(goalId);
     });
 
@@ -1934,7 +2004,7 @@ export class IPCHandlers {
     });
 
     secureHandle('savingsGoals:getAlerts', () => {
-      const goals = this.db.getActiveSavingsGoals();
+      const goals = decryptEntityList(this.db, 'savings_goal', this.db.getActiveSavingsGoals(), this.currentUserId) as SavingsGoal[];
       const now = new Date();
       const alerts: Array<{
         goalId: string;

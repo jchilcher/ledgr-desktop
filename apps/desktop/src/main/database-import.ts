@@ -1,5 +1,5 @@
 import { dialog } from 'electron';
-import fs from 'fs';
+import * as fs from 'fs';
 import BetterSqlite3 = require('better-sqlite3');
 import { backupDatabase } from './database-backup';
 

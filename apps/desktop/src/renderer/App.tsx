@@ -42,6 +42,7 @@ import { PerformanceDashboard } from './components/PerformanceDashboard';
 import { NetWorthPage } from './pages/NetWorthPage';
 import { TransactionImport } from './components/TransactionImport';
 import UpdateNotification from './components/UpdateNotification';
+import WhatsNewModal from './components/WhatsNewModal';
 import { AboutDialog } from './components/AboutDialog';
 import { ImportConfirmDialog } from './components/ImportConfirmDialog';
 import LockScreen from './components/LockScreen';
@@ -128,6 +129,9 @@ const AppContent: React.FC = () => {
   // Per-member auth state
   const [memberAuthStatus, setMemberAuthStatus] = useState<UserAuthStatus[]>([]);
 
+  // What's New post-update state
+  const [whatsNewData, setWhatsNewData] = useState<{ version: string; releaseNotes: string } | null>(null);
+
   // Onboarding state
   const [showOnboarding, setShowOnboarding] = useState(false);
 
@@ -158,9 +162,36 @@ const AppContent: React.FC = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Load version info on mount
+  // Load version info on mount + detect post-update for "What's New"
   useEffect(() => {
-    window.api.app.getVersion().then(info => setVersionString(info.app)).catch(() => {});
+    window.api.app.getVersion().then(info => {
+      setVersionString(info.app);
+
+      const currentVersion = info.app;
+      const lastSeen = localStorage.getItem('ledgr:lastSeenVersion');
+
+      if (!lastSeen) {
+        // Fresh install — just record current version, don't show modal
+        localStorage.setItem('ledgr:lastSeenVersion', currentVersion);
+        return;
+      }
+
+      if (lastSeen !== currentVersion) {
+        // Version changed — check for stored release notes
+        try {
+          const raw = localStorage.getItem('ledgr:pendingUpdateNotes');
+          if (raw) {
+            const parsed = JSON.parse(raw) as { version: string; releaseNotes: string };
+            if (parsed.version === currentVersion && parsed.releaseNotes) {
+              setWhatsNewData(parsed);
+            }
+          }
+        } catch { /* bad JSON — skip */ }
+
+        localStorage.setItem('ledgr:lastSeenVersion', currentVersion);
+        localStorage.removeItem('ledgr:pendingUpdateNotes');
+      }
+    }).catch(() => {});
   }, []);
 
   // Check onboarding status on mount
@@ -1193,6 +1224,14 @@ const AppContent: React.FC = () => {
         <AboutDialog
           isOpen={showAboutDialog}
           onClose={() => setShowAboutDialog(false)}
+        />
+      )}
+
+      {whatsNewData && (
+        <WhatsNewModal
+          version={whatsNewData.version}
+          releaseNotes={whatsNewData.releaseNotes}
+          onClose={() => setWhatsNewData(null)}
         />
       )}
 
