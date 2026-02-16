@@ -168,23 +168,30 @@ describe('IPC Handlers - Analytics', () => {
     it('should group by day', async () => {
       const account = ctx.db.createAccount(makeAccount({ name: 'Test' }))
 
-      ctx.db.createTransaction(makeTransaction({ accountId: account.id, amount: 10000, date: new Date('2026-01-15') }))
-      ctx.db.createTransaction(makeTransaction({ accountId: account.id, amount: -3000, date: new Date('2026-01-15') }))
-      ctx.db.createTransaction(makeTransaction({ accountId: account.id, amount: -5000, date: new Date('2026-01-16') }))
+      // Use local-time constructors to match formatPeriod which uses getDate()/getMonth()
+      const date1 = new Date(2026, 0, 15, 12)
+      const date2 = new Date(2026, 0, 16, 12)
+      const pad = (n: number) => String(n).padStart(2, '0')
+      const period1 = `${date1.getFullYear()}-${pad(date1.getMonth() + 1)}-${pad(date1.getDate())}`
+      const period2 = `${date2.getFullYear()}-${pad(date2.getMonth() + 1)}-${pad(date2.getDate())}`
+
+      ctx.db.createTransaction(makeTransaction({ accountId: account.id, amount: 10000, date: date1 }))
+      ctx.db.createTransaction(makeTransaction({ accountId: account.id, amount: -3000, date: date1 }))
+      ctx.db.createTransaction(makeTransaction({ accountId: account.id, amount: -5000, date: date2 }))
 
       const handler = getHandler('analytics:getIncomeVsExpensesOverTime')
       const result = await handler!(mockEvent, 'day')
 
-      const day15 = result.find((r: { period: string }) => r.period === '2026-01-15')
-      const day16 = result.find((r: { period: string }) => r.period === '2026-01-16')
+      const day1 = result.find((r: { period: string }) => r.period === period1)
+      const day2 = result.find((r: { period: string }) => r.period === period2)
 
-      expect(day15).toBeTruthy()
-      expect(day15.income).toBe(10000)
-      expect(day15.expenses).toBe(3000)
+      expect(day1).toBeTruthy()
+      expect(day1.income).toBe(10000)
+      expect(day1.expenses).toBe(3000)
 
-      expect(day16).toBeTruthy()
-      expect(day16.income).toBe(0)
-      expect(day16.expenses).toBe(5000)
+      expect(day2).toBeTruthy()
+      expect(day2.income).toBe(0)
+      expect(day2.expenses).toBe(5000)
     })
 
     it('should group by year', async () => {
@@ -246,7 +253,7 @@ describe('IPC Handlers - Analytics', () => {
       const result = await handler!(mockEvent, 30, 90)
 
       expect(result).toBeDefined()
-      expect(result.projectedDailySpend).toBeDefined()
+      expect(result.projectedSpending).toBeDefined()
     })
 
     it('should forecast from unencrypted data', async () => {
@@ -263,7 +270,7 @@ describe('IPC Handlers - Analytics', () => {
       const result = await handler!(mockEvent, 30, 90)
 
       expect(result).toBeDefined()
-      expect(result.projectedDailySpend).toBeGreaterThan(0)
+      expect(result.projectedSpending).toBeGreaterThan(0)
     })
   })
 
@@ -295,7 +302,7 @@ describe('IPC Handlers - Analytics', () => {
       const result = await handler!(mockEvent, account.id, startDate, endDate)
 
       expect(result).toBeDefined()
-      expect(result.events).toBeDefined()
+      expect(result.projections).toBeDefined()
     })
 
     it('should forecast from unencrypted recurring items', async () => {
@@ -308,7 +315,7 @@ describe('IPC Handlers - Analytics', () => {
       const result = await handler!(mockEvent, account.id, startDate, endDate)
 
       expect(result).toBeDefined()
-      expect(result.events.length).toBeGreaterThan(0)
+      expect(result.projections.length).toBeGreaterThan(0)
     })
   })
 
@@ -419,7 +426,7 @@ describe('IPC Handlers - Analytics', () => {
       const result = await handler!(mockEvent)
 
       expect(result).toBeDefined()
-      expect(result.safeToSpend).toBeDefined()
+      expect(result.safeAmount).toBeDefined()
     })
   })
 })

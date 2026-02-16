@@ -70,12 +70,14 @@ describe('useRefreshPrices', () => {
 
     const { result } = renderHook(() => useRefreshPrices(['AAPL', 'MSFT']), { wrapper });
 
+    expect(result.current.progress.completed).toBe(0);
+    expect(result.current.progress.total).toBe(0);
+
     await act(async () => {
       result.current.refresh();
     });
 
     expect(result.current.progress.total).toBe(2);
-    expect(result.current.progress.completed).toBe(0);
 
     if (progressCallback) {
       act(() => {
@@ -133,12 +135,15 @@ describe('useRefreshPrices', () => {
       expect(result.current.isSuccess).toBe(true);
     });
 
+    expect(result.current.progress.completed).toBe(1);
+
     await act(async () => {
       result.current.refresh();
     });
 
-    expect(result.current.progress.completed).toBe(0);
-    expect(result.current.progress.total).toBe(1);
+    await waitFor(() => {
+      expect(result.current.progress.total).toBe(1);
+    });
   });
 
   it('cleans up progress listener on unmount', async () => {

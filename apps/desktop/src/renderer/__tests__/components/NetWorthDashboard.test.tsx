@@ -8,42 +8,42 @@ describe('NetWorthDashboard', () => {
   beforeEach(() => {
     mockApi = setupWindowApi()
     mockApi.netWorthCalc.calculate.mockResolvedValue({
+      date: new Date(),
       totalAssets: 1500000,
       totalLiabilities: 500000,
       netWorth: 1000000,
+      bankAccountsTotal: 500000,
+      investmentAccountsTotal: 800000,
+      manualAssetsTotal: 200000,
+      manualLiabilitiesTotal: 500000,
       changeFromPrevious: 50000,
       changePercentFromPrevious: 5.25,
-      bankAccounts: {
-        total: 500000,
-        accounts: [
-          { id: '1', name: 'Checking', type: 'checking', balance: 500000 }
-        ]
-      },
-      investments: {
-        total: 800000,
-        accounts: [
-          { id: '1', accountId: '1', accountName: 'IRA', totalValue: 800000 }
-        ]
-      },
-      manualAssets: {
-        total: 200000,
-        assets: [
-          { id: '1', name: 'House', currentValue: 200000, category: 'real_estate' }
-        ]
-      },
-      manualLiabilities: {
-        total: 500000,
-        liabilities: [
-          { id: '1', name: 'Mortgage', currentBalance: 500000, type: 'mortgage' }
-        ]
-      },
+      bankAccounts: [
+        { id: '1', name: 'Checking', value: 500000 }
+      ],
+      investmentAccounts: [
+        { id: '1', name: 'IRA', value: 800000 }
+      ],
+      manualAssets: [
+        { id: '1', name: 'House', value: 200000 }
+      ],
+      liabilities: [
+        { id: '1', name: 'Mortgage', value: 500000 }
+      ],
     })
     mockApi.netWorthCalc.getChangeSummary.mockResolvedValue({
+      period: {
+        startDate: new Date(),
+        endDate: new Date(),
+        days: 30,
+      },
+      startNetWorth: 975000,
+      endNetWorth: 1000000,
       change: 25000,
       changePercent: 2.5,
-      fromDate: new Date(),
-      toDate: new Date(),
-      period: 'month',
+      assetsChange: 30000,
+      liabilitiesChange: -5000,
+      categoryChanges: [],
     })
   })
 
@@ -63,7 +63,8 @@ describe('NetWorthDashboard', () => {
     renderWithProviders(<NetWorthDashboard />)
 
     await waitFor(() => {
-      expect(screen.getByText(/bank accounts/i)).toBeInTheDocument()
+      const bankAccountsElements = screen.getAllByText(/bank accounts/i)
+      expect(bankAccountsElements.length).toBeGreaterThan(0)
     })
   })
 
@@ -71,7 +72,8 @@ describe('NetWorthDashboard', () => {
     renderWithProviders(<NetWorthDashboard />)
 
     await waitFor(() => {
-      expect(screen.getByText(/investments/i)).toBeInTheDocument()
+      const investmentsElements = screen.getAllByText(/investments/i)
+      expect(investmentsElements.length).toBeGreaterThan(0)
     })
   })
 
@@ -79,7 +81,8 @@ describe('NetWorthDashboard', () => {
     renderWithProviders(<NetWorthDashboard />)
 
     await waitFor(() => {
-      expect(screen.getAllByText(/liabilities/i).length).toBeGreaterThan(0)
+      const liabilitiesElements = screen.getAllByText(/liabilities/i)
+      expect(liabilitiesElements.length).toBeGreaterThan(0)
     })
   })
 

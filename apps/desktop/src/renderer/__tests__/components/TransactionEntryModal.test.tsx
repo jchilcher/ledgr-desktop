@@ -9,12 +9,14 @@ describe('TransactionEntryModal', () => {
   const mockHolding = mockInvestmentHoldings[0];
 
   beforeEach(() => {
-    setupWindowApi({
-      investmentTransactions: {
-        create: jest.fn().mockResolvedValue({}),
-        update: jest.fn().mockResolvedValue({}),
-      },
-    });
+    setupWindowApi();
+
+    // Add investmentTransactions API
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (window.api as any).investmentTransactions = {
+      create: jest.fn().mockResolvedValue(undefined),
+      update: jest.fn().mockResolvedValue(undefined),
+    };
   });
 
   afterEach(() => {
@@ -122,14 +124,22 @@ describe('TransactionEntryModal', () => {
       />
     );
 
-    const form = screen.getByRole('form') || document.querySelector('form');
-    if (form) {
-      fireEvent.submit(form);
-    }
+    const form = document.querySelector('form');
+    expect(form).toBeInTheDocument();
 
-    await waitFor(() => {
-      expect(mockOnSave).toHaveBeenCalled();
-    });
+    if (form) {
+      // Fill in required fields
+      const sharesInput = form.querySelector('input[type="number"]');
+      if (sharesInput) {
+        fireEvent.change(sharesInput, { target: { value: '10' } });
+      }
+
+      fireEvent.submit(form);
+
+      await waitFor(() => {
+        expect(mockOnSave).toHaveBeenCalled();
+      });
+    }
   });
 
   it('renders transaction type options', () => {

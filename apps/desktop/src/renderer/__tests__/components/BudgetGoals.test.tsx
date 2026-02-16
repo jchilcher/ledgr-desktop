@@ -69,8 +69,7 @@ describe('BudgetGoals', () => {
     renderWithProviders(<BudgetGoals />);
 
     await waitFor(() => {
-      const budgetElements = screen.getAllByText(/budget/i);
-      expect(budgetElements.length).toBeGreaterThan(0);
+      expect(screen.getByRole('heading', { name: /budget goals/i })).toBeInTheDocument();
     });
   });
 
@@ -96,8 +95,7 @@ describe('BudgetGoals', () => {
     renderWithProviders(<BudgetGoals />);
 
     await waitFor(() => {
-      const budgetElements = screen.getAllByText(/budget/i);
-      expect(budgetElements.length).toBeGreaterThan(0);
+      expect(screen.getByRole('heading', { name: /budget goals/i })).toBeInTheDocument();
     });
   });
 
@@ -111,8 +109,7 @@ describe('BudgetGoals', () => {
     renderWithProviders(<BudgetGoals />);
 
     await waitFor(() => {
-      const budgetElements = screen.getAllByText(/budget/i);
-      expect(budgetElements.length).toBeGreaterThan(0);
+      expect(screen.getByRole('heading', { name: /budget goals/i })).toBeInTheDocument();
     });
   });
 
@@ -132,7 +129,7 @@ describe('BudgetGoals', () => {
     renderWithProviders(<BudgetGoals />);
 
     await waitFor(() => {
-      expect(screen.getByText(/budget/i)).toBeInTheDocument();
+      expect(screen.getByRole('heading', { name: /budget goals/i })).toBeInTheDocument();
     });
   });
 
@@ -142,7 +139,7 @@ describe('BudgetGoals', () => {
     renderWithProviders(<BudgetGoals />);
 
     await waitFor(() => {
-      expect(screen.getByText(/budget/i)).toBeInTheDocument();
+      expect(screen.getByRole('heading', { name: /budget goals/i })).toBeInTheDocument();
     });
   });
 
@@ -150,7 +147,7 @@ describe('BudgetGoals', () => {
     renderWithProviders(<BudgetGoals />);
 
     await waitFor(() => {
-      expect(screen.getByText(/budget/i)).toBeInTheDocument();
+      expect(screen.getByRole('heading', { name: /budget goals/i })).toBeInTheDocument();
     });
   });
 });

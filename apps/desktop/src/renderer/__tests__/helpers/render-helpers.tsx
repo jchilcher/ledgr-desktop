@@ -381,6 +381,7 @@ export function createMockApi() {
 
     security: {
       getUserAuthStatus: jest.fn().mockResolvedValue([]),
+      getMemberAuthStatus: jest.fn().mockResolvedValue([]),
       checkPassword: jest.fn().mockResolvedValue(false),
       enableMemberPassword: jest.fn().mockResolvedValue(undefined),
       updateMemberPassword: jest.fn().mockResolvedValue(undefined),
@@ -442,9 +443,17 @@ export function createMockApi() {
     },
 
     reimbursements: {
+      getAll: jest.fn().mockResolvedValue([]),
       getSummary: jest.fn().mockResolvedValue({ status: 'none', originalAmount: 0, totalReimbursed: 0, netAmount: 0, links: [] }),
       linkTransactions: jest.fn().mockResolvedValue(undefined),
       unlinkTransactions: jest.fn().mockResolvedValue(undefined),
+    },
+
+    dashboardLayout: {
+      get: jest.fn().mockResolvedValue(null),
+      set: jest.fn().mockResolvedValue(undefined),
+      getWidgets: jest.fn().mockResolvedValue(null),
+      setWidgets: jest.fn().mockResolvedValue(undefined),
     },
 
     safeToSpend: {

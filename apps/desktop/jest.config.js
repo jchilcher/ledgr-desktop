@@ -8,6 +8,7 @@ module.exports = {
       testMatch: ['<rootDir>/src/main/__tests__/**/*.test.ts'],
       moduleNameMapper: {
         '^@/(.*)$': '<rootDir>/src/$1',
+        '^electron$': '<rootDir>/src/main/__tests__/helpers/__mocks__/electron.js',
       },
       transformIgnorePatterns: [
         'node_modules/(?!(uuid)/)',
