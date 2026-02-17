@@ -112,7 +112,9 @@ jobs:
         run: |
           TAG="${GITHUB_REF#refs/tags/}"
           EXISTING=$(gh release view "$TAG" --json body -q .body || echo "")
-          SUPPORT_LINK=$'\n\n---\n\n☕ If you find Ledgr useful, [buy me a coffee](https://buymeacoffee.com/jchilcher)!'
-          gh release edit "$TAG" --notes "${EXISTING}${SUPPORT_LINK}"
+          if ! echo "$EXISTING" | grep -q "buymeacoffee.com"; then
+            SUPPORT_LINK=$'\n\n---\n\n[![Buy Me A Coffee](https://img.shields.io/badge/Buy%20Me%20A%20Coffee-ffdd00?style=flat&logo=buy-me-a-coffee&logoColor=black)](https://buymeacoffee.com/jchilcher)\nIf you find Ledgr useful!'
+            gh release edit "$TAG" --notes "${EXISTING}${SUPPORT_LINK}"
+          fi
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -16,7 +16,7 @@ const URLS = {
   source: 'https://github.com/jchilcher/ledgr',
   privacy: 'https://github.com/jchilcher/ledgr/blob/main/PRIVACY.md',
   terms: 'https://github.com/jchilcher/ledgr/blob/main/TERMS.md',
-  donate: 'https://buymeacoffee.com/techloomit',
+  donate: 'https://buymeacoffee.com/jchilcher',
 };
 
 export function AboutDialog({ isOpen, onClose }: AboutDialogProps) {
