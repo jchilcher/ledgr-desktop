@@ -79,6 +79,8 @@ import {
   generateTaxLotReport,
   PaycheckBudgetEngine,
   PaycheckBudgetViewInput,
+  generatePayments,
+  matchTransaction,
 } from '@ledgr/core';
 import { priceStorage } from './storage/priceStorage';
 import { importTransactionsFromFile } from './import-handler';
@@ -406,6 +408,27 @@ export class IPCHandlers {
     this.benchmarkService = new BenchmarkService();
 
     this.registerHandlers();
+
+    // Generate recurring payments on startup
+    this.generateRecurringPayments();
+  }
+
+  private generateRecurringPayments(): void {
+    try {
+      const items = this.db.getActiveRecurringItems();
+      const decryptedItems = decryptEntityList(this.db, 'recurring_item', items, this.currentUserId) as RecurringItem[];
+
+      generatePayments({
+        getActiveRecurringItems: () => decryptedItems.filter(item => item.enableReminders && item.isActive),
+        getPaymentsForItem: (itemId: string) => this.db.getRecurringPayments(itemId),
+        createPayment: (payment) => this.db.createRecurringPayment(payment),
+        updatePayment: (id, updates) => {
+          this.db.updateRecurringPayment(id, updates);
+        },
+      });
+    } catch (error) {
+      console.error('Error generating recurring payments:', error);
+    }
   }
 
   /** Set the current authenticated user (called from main.ts startup unlock) */
@@ -2286,9 +2309,11 @@ export class IPCHandlers {
           values.push(created.id);
           this.db.rawDb.prepare(`UPDATE recurring_items SET ${setClauses.join(', ')} WHERE id = ?`).run(...values);
           applyBlanketShares(this.db, 'recurring_item', created.id, ownerId, dek);
+          this.generateRecurringPayments();
           return { ...created, isEncrypted: true };
         }
       }
+      this.generateRecurringPayments();
       return created;
     });
 
@@ -2331,10 +2356,13 @@ export class IPCHandlers {
           if (result?.isEncrypted && result.ownerId) {
             return decryptEntityFields('recurring_item', result as unknown as Record<string, unknown>, dek);
           }
+          this.generateRecurringPayments();
           return result;
         }
       }
-      return this.db.updateRecurringItem(id, parsedUpdates);
+      const result = this.db.updateRecurringItem(id, parsedUpdates);
+      this.generateRecurringPayments();
+      return result;
     });
 
     secureHandle('recurring:delete', (_event, id: string) => {
@@ -2375,6 +2403,125 @@ export class IPCHandlers {
 
     secureHandle('recurringPayments:delete', (_event, id: string) => {
       return this.db.deleteRecurringPayment(id);
+    });
+
+    secureHandle('recurringPayments:generate', () => {
+      const items = this.db.getActiveRecurringItems();
+      const decryptedItems = decryptEntityList(this.db, 'recurring_item', items, this.currentUserId) as RecurringItem[];
+
+      const result = generatePayments({
+        getActiveRecurringItems: () => decryptedItems.filter(item => item.enableReminders && item.isActive),
+        getPaymentsForItem: (itemId: string) => this.db.getRecurringPayments(itemId),
+        createPayment: (payment) => this.db.createRecurringPayment(payment),
+        updatePayment: (id, updates) => {
+          this.db.updateRecurringPayment(id, updates);
+        },
+      });
+
+      return result;
+    });
+
+    secureHandle('recurringPayments:markPaid', (_event, id: string, paidDate?: string) => {
+      const date = paidDate ? new Date(paidDate) : new Date();
+      return this.db.updateRecurringPayment(id, {
+        status: 'paid',
+        paidDate: date,
+      });
+    });
+
+    secureHandle('recurringPayments:linkTransaction', (_event, paymentId: string, transactionId: string) => {
+      const transaction = this.db.getTransactionById(transactionId);
+      if (!transaction) return null;
+
+      return this.db.updateRecurringPayment(paymentId, {
+        status: 'paid',
+        transactionId,
+        paidDate: new Date(transaction.date),
+      });
+    });
+
+    secureHandle('recurringPayments:getForCurrentPeriod', () => {
+      const now = new Date();
+      const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+      const endOfMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+
+      return this.db.getRecurringPaymentsByDateRange(
+        startOfMonth.toISOString(),
+        endOfMonth.toISOString()
+      );
+    });
+
+    // Recurring Item Rules
+    secureHandle('recurringItemRules:getAll', () => {
+      return this.db.getRecurringItemRules();
+    });
+
+    secureHandle('recurringItemRules:create', (_event, rule: { pattern: string; recurringItemId: string; priority: number; amountMin?: number | null; amountMax?: number | null; accountFilter?: string | null }) => {
+      return this.db.createRecurringItemRule({
+        pattern: rule.pattern,
+        recurringItemId: rule.recurringItemId,
+        priority: rule.priority,
+        amountMin: rule.amountMin ?? null,
+        amountMax: rule.amountMax ?? null,
+        accountFilter: rule.accountFilter ?? null,
+      });
+    });
+
+    secureHandle('recurringItemRules:update', (_event, id: string, updates: { pattern?: string; priority?: number; amountMin?: number | null; amountMax?: number | null; accountFilter?: string | null }) => {
+      return this.db.updateRecurringItemRule(id, updates);
+    });
+
+    secureHandle('recurringItemRules:delete', (_event, id: string) => {
+      return this.db.deleteRecurringItemRule(id);
+    });
+
+    secureHandle('recurringItemRules:runRules', () => {
+      const allTransactions = this.db.getTransactions();
+      const unlinkedTransactions = allTransactions.filter(tx => {
+        const payments = this.db.getRecurringPayments('');
+        return !payments.some(p => p.transactionId === tx.id);
+      });
+
+      const rules = this.db.getRecurringItemRules();
+      let matched = 0;
+
+      for (const tx of unlinkedTransactions) {
+        const account = this.db.getAccountById(tx.accountId);
+        if (!account) continue;
+
+        let decryptedTx = tx;
+        if (account.isEncrypted && account.ownerId && this.currentUserId) {
+          const dek = getDecryptionDEK(this.db, 'account', account.id, account.ownerId, this.currentUserId);
+          if (dek) {
+            decryptedTx = decryptEntityFields('transaction', tx as unknown as Record<string, unknown>, dek) as unknown as Transaction;
+          }
+        }
+
+        const matchResult = matchTransaction(
+          {
+            id: decryptedTx.id,
+            description: decryptedTx.description,
+            amount: decryptedTx.amount,
+            accountId: decryptedTx.accountId,
+            date: new Date(decryptedTx.date),
+          },
+          {
+            getRules: () => rules,
+            getPendingPayments: (recurringItemId: string) => this.db.getRecurringPayments(recurringItemId),
+          }
+        );
+
+        if (matchResult && matchResult.paymentId) {
+          this.db.updateRecurringPayment(matchResult.paymentId, {
+            status: 'paid',
+            transactionId: matchResult.transactionId,
+            paidDate: new Date(decryptedTx.date),
+          });
+          matched++;
+        }
+      }
+
+      return { matched, total: unlinkedTransactions.length };
     });
 
     // Recurring Detection handlers
@@ -3166,7 +3313,12 @@ export class IPCHandlers {
         rows: TransactionImportPreviewRow[],
         duplicateAction: DuplicateAction
       ) => {
-        return commitTransactionImport(this.db, accountId, rows, duplicateAction, this.categorizationEngine);
+        const recurringMatchingDeps = {
+          getRules: () => this.db.getRecurringItemRules(),
+          getPendingPayments: (recurringItemId: string) =>
+            this.db.getRecurringPayments(recurringItemId),
+        };
+        return commitTransactionImport(this.db, accountId, rows, duplicateAction, this.categorizationEngine, recurringMatchingDeps);
       }
     );
 
@@ -4613,6 +4765,17 @@ export class IPCHandlers {
     ipcMain.removeHandler('recurringPayments:create');
     ipcMain.removeHandler('recurringPayments:update');
     ipcMain.removeHandler('recurringPayments:delete');
+    ipcMain.removeHandler('recurringPayments:generate');
+    ipcMain.removeHandler('recurringPayments:markPaid');
+    ipcMain.removeHandler('recurringPayments:linkTransaction');
+    ipcMain.removeHandler('recurringPayments:getForCurrentPeriod');
+
+    // Recurring Item Rules
+    ipcMain.removeHandler('recurringItemRules:getAll');
+    ipcMain.removeHandler('recurringItemRules:create');
+    ipcMain.removeHandler('recurringItemRules:update');
+    ipcMain.removeHandler('recurringItemRules:delete');
+    ipcMain.removeHandler('recurringItemRules:runRules');
 
     // Recurring Detection
     ipcMain.removeHandler('recurringDetection:analyze');

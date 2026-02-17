@@ -168,6 +168,18 @@ export function createMockApi() {
       create: jest.fn(),
       update: jest.fn().mockResolvedValue(null),
       delete: jest.fn().mockResolvedValue(false),
+      generate: jest.fn().mockResolvedValue({ generated: 0, overdue: 0 }),
+      markPaid: jest.fn().mockResolvedValue(null),
+      linkTransaction: jest.fn().mockResolvedValue(null),
+      getForCurrentPeriod: jest.fn().mockResolvedValue([]),
+    },
+
+    recurringItemRules: {
+      getAll: jest.fn().mockResolvedValue([]),
+      create: jest.fn(),
+      update: jest.fn().mockResolvedValue(null),
+      delete: jest.fn().mockResolvedValue(false),
+      runRules: jest.fn().mockResolvedValue({ matched: 0, total: 0 }),
     },
 
     cashflow: {

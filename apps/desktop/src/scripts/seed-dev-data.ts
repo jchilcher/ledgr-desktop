@@ -1228,7 +1228,7 @@ function seedInvestments(db: BudgetDatabase): InvestmentIds {
   });
 
   // ── Sells ───────────────────────────────────────────────────
-  // AAPL: sell 5 shares @ $180 (bought at $165 → short-term gain)
+  // AAPL: sell 5 shares @ $180 (FIFO consumes Nov 2023 lot @ $150 → long-term gain)
   db.createInvestmentTransaction({
     holdingId: aapl.id,
     type: 'sell',
@@ -1237,7 +1237,7 @@ function seedInvestments(db: BudgetDatabase): InvestmentIds {
     pricePerShare: cents(180),
     totalAmount: cents(5 * 180),
     fees: 0,
-    notes: 'Short-term profit — bought at $165 in Apr 2025',
+    notes: 'Long-term gain — FIFO from Nov 2023 lot @ $150',
   });
 
   // VOO: sell 5 shares @ $370 (bought at $380 → tax-loss harvest)
@@ -1301,7 +1301,81 @@ function seedInvestments(db: BudgetDatabase): InvestmentIds {
     notes: 'Q4 dividend reinvestment — $45',
   });
 
-  console.log('    → 1 investment account, 3 holdings, 12 transactions (6 buys, 2 sells, 2 dividends, 1 wash-sale buy, 1 DRIP)');
+  // ── 2026 Sells ────────────────────────────────────────────
+  // BND: sell 15 shares @ $77 (FIFO consumes Jun 2024 lot @ $70 → long-term gain +$105)
+  db.createInvestmentTransaction({
+    holdingId: bnd.id,
+    type: 'sell',
+    date: d(2026, 1, 15),
+    shares: -15 * 10000,
+    pricePerShare: cents(77),
+    totalAmount: cents(15 * 77),
+    fees: 0,
+    notes: 'Long-term gain — FIFO from Jun 2024 lot @ $70',
+  });
+
+  // VOO: sell 3 shares @ $410 (FIFO consumes Mar 2024 lot @ $380 → long-term gain +$90)
+  db.createInvestmentTransaction({
+    holdingId: voo.id,
+    type: 'sell',
+    date: d(2026, 1, 22),
+    shares: -3 * 10000,
+    pricePerShare: cents(410),
+    totalAmount: cents(3 * 410),
+    fees: 0,
+    notes: 'Long-term gain — FIFO from Mar 2024 lot @ $380',
+  });
+
+  // AAPL: sell 5 shares @ $140 (FIFO consumes Nov 2023 lot @ $150 → long-term loss -$50)
+  db.createInvestmentTransaction({
+    holdingId: aapl.id,
+    type: 'sell',
+    date: d(2026, 2, 5),
+    shares: -5 * 10000,
+    pricePerShare: cents(140),
+    totalAmount: cents(5 * 140),
+    fees: 0,
+    notes: 'Long-term loss — FIFO from Nov 2023 lot @ $150',
+  });
+
+  // VOO: sell 2 shares @ $370 (FIFO consumes Mar 2024 lot @ $380 → long-term loss -$20)
+  db.createInvestmentTransaction({
+    holdingId: voo.id,
+    type: 'sell',
+    date: d(2026, 2, 5),
+    shares: -2 * 10000,
+    pricePerShare: cents(370),
+    totalAmount: cents(2 * 370),
+    fees: 0,
+    notes: 'Long-term loss — FIFO from Mar 2024 lot @ $380',
+  });
+
+  // VOO: buy 2 shares @ $372 (wash sale trigger — within 30 days of Feb 5 sell)
+  db.createInvestmentTransaction({
+    holdingId: voo.id,
+    type: 'buy',
+    date: d(2026, 2, 15),
+    shares: 2 * 10000,
+    pricePerShare: cents(372),
+    totalAmount: cents(2 * 372),
+    fees: 0,
+    notes: 'Wash sale trigger — repurchased within 30 days',
+  });
+
+  // ── 2026 Dividends ──────────────────────────────────────
+  // BND: Jan 2026 dividend $20
+  db.createInvestmentTransaction({
+    holdingId: bnd.id,
+    type: 'dividend',
+    date: d(2026, 1, 31),
+    shares: 0,
+    pricePerShare: 0,
+    totalAmount: cents(20),
+    fees: 0,
+    notes: 'Jan 2026 dividend',
+  });
+
+  console.log('    → 1 investment account, 3 holdings, 18 transactions (8 buys, 6 sells, 3 dividends, 1 DRIP)');
 
   return { fidelity: fidelity.id, voo: voo.id, bnd: bnd.id, aapl: aapl.id };
 }

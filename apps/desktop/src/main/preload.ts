@@ -7,6 +7,7 @@ import {
   RecurringTransaction,
   RecurringItem,
   RecurringPayment,
+  RecurringItemRule,
   Tag,
 
   TransactionSplit,
@@ -304,6 +305,22 @@ contextBridge.exposeInMainWorld('api', {
     update: (id: string, updates: Partial<Omit<RecurringPayment, 'id' | 'createdAt' | 'recurringItemId'>>) =>
       ipcRenderer.invoke('recurringPayments:update', id, updates),
     delete: (id: string) => ipcRenderer.invoke('recurringPayments:delete', id),
+    generate: () => ipcRenderer.invoke('recurringPayments:generate'),
+    markPaid: (paymentId: string, paidDate?: string) =>
+      ipcRenderer.invoke('recurringPayments:markPaid', paymentId, paidDate),
+    linkTransaction: (paymentId: string, transactionId: string) =>
+      ipcRenderer.invoke('recurringPayments:linkTransaction', paymentId, transactionId),
+    getForCurrentPeriod: () => ipcRenderer.invoke('recurringPayments:getForCurrentPeriod'),
+  },
+
+  recurringItemRules: {
+    getAll: () => ipcRenderer.invoke('recurringItemRules:getAll'),
+    create: (rule: Omit<RecurringItemRule, 'id' | 'createdAt'>) =>
+      ipcRenderer.invoke('recurringItemRules:create', rule),
+    update: (id: string, updates: Partial<Omit<RecurringItemRule, 'id' | 'createdAt'>>) =>
+      ipcRenderer.invoke('recurringItemRules:update', id, updates),
+    delete: (id: string) => ipcRenderer.invoke('recurringItemRules:delete', id),
+    runRules: () => ipcRenderer.invoke('recurringItemRules:runRules'),
   },
 
   // Cash Flow API
@@ -1296,7 +1313,7 @@ contextBridge.exposeInMainWorld('api', {
     update: (id: string, updates: { amount?: number }) =>
       ipcRenderer.invoke('paycheckAllocations:update', id, updates),
     delete: (id: string) => ipcRenderer.invoke('paycheckAllocations:delete', id),
-    getBudgetView: (incomeStreamId: string) =>
+    getBudgetView: (incomeStreamId?: string) =>
       ipcRenderer.invoke('paycheckAllocations:getBudgetView', incomeStreamId),
   },
 });

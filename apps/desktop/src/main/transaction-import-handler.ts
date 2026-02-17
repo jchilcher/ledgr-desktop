@@ -10,6 +10,7 @@ import {
   type TransactionColumnMapping,
 } from '@ledgr/core';
 import { CategorizationEngine } from './categorization-engine';
+import { matchTransaction, type RecurringMatchingDependencies } from '@ledgr/core';
 import type {
   TransactionImportPreviewRow,
   TransactionImportPreviewResult,
@@ -272,7 +273,8 @@ export function commitTransactionImport(
   accountId: string,
   rows: TransactionImportPreviewRow[],
   duplicateAction: DuplicateAction,
-  categorizationEngine: CategorizationEngine
+  categorizationEngine: CategorizationEngine,
+  recurringMatchingDeps?: RecurringMatchingDependencies
 ): TransactionImportCommitResult {
   const selectedRows = rows.filter(r => r.selected);
 
@@ -329,15 +331,35 @@ export function commitTransactionImport(
       const categoryId = suggestedCategoryId || uncategorizedCategory.id;
 
       // Create the transaction (convert dollar amount to cents for storage)
-      db.createTransaction({
+      const amountInCents = Math.round(row.amount * 100);
+      const newTx = db.createTransaction({
         accountId,
         date: row.date,
         description: row.description,
-        amount: Math.round(row.amount * 100),
+        amount: amountInCents,
         categoryId,
         isRecurring: false,
         importSource: 'file',
       });
+
+      // Auto-match against recurring item rules
+      if (recurringMatchingDeps && newTx) {
+        try {
+          const match = matchTransaction(
+            { id: newTx.id, description: row.description, amount: amountInCents, accountId, date: row.date },
+            recurringMatchingDeps
+          );
+          if (match && match.paymentId) {
+            db.updateRecurringPayment(match.paymentId, {
+              status: 'paid',
+              paidDate: row.date,
+              transactionId: newTx.id,
+            });
+          }
+        } catch {
+          // Silent — don't fail import if matching errors
+        }
+      }
 
       imported++;
     } catch (error) {

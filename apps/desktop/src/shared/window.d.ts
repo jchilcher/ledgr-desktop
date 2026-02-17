@@ -7,6 +7,7 @@ import {
   RecurringItem,
   RecurringPayment,
   RecurringPaymentWithItem,
+  RecurringItemRule,
   Tag,
 
   TransactionSplit,
@@ -383,6 +384,18 @@ export interface API {
     create: (payment: Omit<RecurringPayment, 'id' | 'createdAt'>) => Promise<RecurringPayment>;
     update: (id: string, updates: Partial<Omit<RecurringPayment, 'id' | 'createdAt' | 'recurringItemId'>>) => Promise<RecurringPayment | null>;
     delete: (id: string) => Promise<boolean>;
+    generate: () => Promise<{ generated: number; overdue: number }>;
+    markPaid: (paymentId: string, paidDate?: string) => Promise<RecurringPayment | null>;
+    linkTransaction: (paymentId: string, transactionId: string) => Promise<RecurringPayment | null>;
+    getForCurrentPeriod: () => Promise<RecurringPayment[]>;
+  };
+
+  recurringItemRules: {
+    getAll: () => Promise<RecurringItemRule[]>;
+    create: (rule: Omit<RecurringItemRule, 'id' | 'createdAt'>) => Promise<RecurringItemRule>;
+    update: (id: string, updates: Partial<Omit<RecurringItemRule, 'id' | 'createdAt'>>) => Promise<RecurringItemRule | null>;
+    delete: (id: string) => Promise<boolean>;
+    runRules: () => Promise<{ matched: number; total: number }>;
   };
 
   cashflow: {
@@ -1886,7 +1899,7 @@ export interface API {
     }) => Promise<PaycheckAllocation>;
     update: (id: string, updates: { amount?: number }) => Promise<PaycheckAllocation | null>;
     delete: (id: string) => Promise<boolean>;
-    getBudgetView: (incomeStreamId: string) => Promise<PaycheckBudgetView | null>;
+    getBudgetView: (incomeStreamId?: string) => Promise<PaycheckBudgetView[] | PaycheckBudgetView | null>;
   };
 }
 

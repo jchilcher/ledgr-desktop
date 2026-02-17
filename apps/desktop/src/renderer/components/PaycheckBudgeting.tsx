@@ -28,15 +28,7 @@ export default function PaycheckBudgeting() {
     try {
       setLoading(true);
 
-      const incomeAnalysis = await window.api.incomeAnalysis.identifyStreams();
-      const budgetViews: PaycheckBudgetView[] = [];
-
-      for (const stream of incomeAnalysis) {
-        const view = await window.api.paycheckAllocations.getBudgetView(stream.id);
-        if (view) {
-          budgetViews.push(view);
-        }
-      }
+      const budgetViews = await window.api.paycheckAllocations.getBudgetView() as PaycheckBudgetView[];
 
       setViews(budgetViews);
       if (budgetViews.length > 0 && !selectedStreamId) {

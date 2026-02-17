@@ -11,6 +11,7 @@ import { OFXConnectWizard } from './components/OFXConnectWizard';
 import CategoryTrends from './components/CategoryTrends';
 import CategoryForecast from './components/CategoryForecast';
 import CategoryRules from './components/CategoryRules';
+import RecurringItemRules from './components/RecurringItemRules';
 
 import CategoryManager from './components/CategoryManager';
 import RecurringSuggestions from './components/RecurringSuggestions';
@@ -39,6 +40,7 @@ import WhatIfSimulator from './components/WhatIfSimulator';
 import EmergencyMode from './components/EmergencyMode';
 import { InvestmentAccounts } from './components/InvestmentAccounts';
 import { PerformanceDashboard } from './components/PerformanceDashboard';
+import TaxLotReport from './components/TaxLotReport';
 import { NetWorthPage } from './pages/NetWorthPage';
 import { TransactionImport } from './components/TransactionImport';
 import UpdateNotification from './components/UpdateNotification';
@@ -59,6 +61,27 @@ import HouseholdSettings from './components/HouseholdSettings';
 import PrivacySettings from './components/PrivacySettings';
 import BankExportGuide from './components/BankExportGuide';
 import TutorialOverlay from './components/TutorialOverlay';
+
+const BUILT_IN_RELEASE_NOTES: Record<string, string> = {
+  '1.0.3': `
+    <h3>Recurring Payment Tracking</h3>
+    <ul>
+      <li>Automatically generates expected payments from your active recurring items with pending, overdue, and paid status tracking.</li>
+      <li>Mark payments as paid or link them to an existing transaction directly from the Bill Calendar or Recurring Items views.</li>
+    </ul>
+    <h3>Payment Rules</h3>
+    <ul>
+      <li>New "Payment Rules" tab under Recurring Items lets you create pattern-based rules that automatically match imported transactions to recurring items.</li>
+      <li>Rules support description matching, amount range, and account filters.</li>
+      <li>Imported transactions are now auto-matched against payment rules during file import.</li>
+    </ul>
+    <h3>Enhanced Automation Rules</h3>
+    <ul>
+      <li>Category automation rules now support additional conditions: amount range, account filter, and income/expense direction.</li>
+      <li>New actions beyond category assignment: add tag, hide from reports, and mark as transfer.</li>
+    </ul>
+  `,
+};
 
 type ViewType = 'dashboard' | 'transactions' | 'recurring' | 'budgets' | 'savings' | 'networth' | 'investments' | 'analytics' | 'settings' | 'privacy' | 'lock';
 
@@ -103,8 +126,8 @@ const AppContent: React.FC = () => {
   const [analyticsToolId, setAnalyticsToolId] = useState<AnalyticsToolId | null>(null);
   const [transactionsTab, setTransactionsTab] = useState<'list' | 'import' | 'review'>(initialTransactionsTab);
   const [settingsTab, setSettingsTab] = useState<'general' | 'categories' | 'rules' | 'household' | 'security' | 'data'>(initialSettingsTab);
-  const [investmentTab, setInvestmentTab] = useState<'holdings' | 'performance'>('holdings');
-  const [recurringTab, setRecurringTab] = useState<'items' | 'calendar'>('items');
+  const [investmentTab, setInvestmentTab] = useState<'holdings' | 'performance' | 'tax-reports'>('holdings');
+  const [recurringTab, setRecurringTab] = useState<'items' | 'calendar' | 'rules'>('items');
   const [newAccountName, setNewAccountName] = useState('');
   const [newAccountType, setNewAccountType] = useState<'checking' | 'savings' | 'credit'>('checking');
   const [newAccountInstitution, setNewAccountInstitution] = useState('');
@@ -177,16 +200,22 @@ const AppContent: React.FC = () => {
       }
 
       if (lastSeen !== currentVersion) {
-        // Version changed — check for stored release notes
+        // Version changed — check for stored release notes, fall back to built-in
+        let found = false;
         try {
           const raw = localStorage.getItem('ledgr:pendingUpdateNotes');
           if (raw) {
             const parsed = JSON.parse(raw) as { version: string; releaseNotes: string };
             if (parsed.version === currentVersion && parsed.releaseNotes) {
               setWhatsNewData(parsed);
+              found = true;
             }
           }
         } catch { /* bad JSON — skip */ }
+
+        if (!found && BUILT_IN_RELEASE_NOTES[currentVersion]) {
+          setWhatsNewData({ version: currentVersion, releaseNotes: BUILT_IN_RELEASE_NOTES[currentVersion] });
+        }
 
         localStorage.setItem('ledgr:lastSeenVersion', currentVersion);
         localStorage.removeItem('ledgr:pendingUpdateNotes');
@@ -563,11 +592,13 @@ const AppContent: React.FC = () => {
   const investmentTabs = [
     { id: 'holdings', label: 'Holdings' },
     { id: 'performance', label: 'Performance' },
+    { id: 'tax-reports', label: 'Tax Reports' },
   ] as const;
 
   const recurringTabs = [
     { id: 'items', label: 'Recurring Items' },
     { id: 'calendar', label: 'Bill Calendar' },
+    { id: 'rules', label: 'Payment Rules' },
   ] as const;
 
   // Startup lock screen — render only the lock screen, no app chrome
@@ -1000,6 +1031,7 @@ const AppContent: React.FC = () => {
             </>
           )}
           {recurringTab === 'calendar' && <BillCalendar />}
+          {recurringTab === 'rules' && <RecurringItemRules />}
         </div>
       )}
 
@@ -1033,6 +1065,7 @@ const AppContent: React.FC = () => {
             <InvestmentAccounts onSelectAccount={() => {}} />
           )}
           {investmentTab === 'performance' && <PerformanceDashboard />}
+          {investmentTab === 'tax-reports' && <TaxLotReport />}
         </div>
       )}
 

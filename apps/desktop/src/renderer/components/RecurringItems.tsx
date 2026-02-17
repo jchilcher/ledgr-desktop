@@ -1,11 +1,12 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { Account, Category, RecurringItem, RecurringItemType, RecurringFrequency, TransactionType, UserAuthStatus, EncryptableEntityType } from '../../shared/types';
+import { Account, Category, RecurringItem, RecurringItemType, RecurringFrequency, TransactionType, UserAuthStatus, EncryptableEntityType, RecurringPayment } from '../../shared/types';
 import { useInlineEdit } from '../hooks/useInlineEdit';
 import { EditableText, EditableNumber, EditableSelect, EditableCheckbox } from './inline-edit';
 import EmptyState from './EmptyState';
 import OwnershipSelector from './OwnershipSelector';
 import ShareDialog from './ShareDialog';
 import { useHousehold } from '../contexts/HouseholdContext';
+import TransactionPickerModal from './TransactionPickerModal';
 
 type FilterMode = 'all' | 'bills' | 'subscriptions' | 'cashflow';
 
@@ -85,6 +86,8 @@ export default function RecurringItems() {
   const [error, setError] = useState('');
   const [shareTarget, setShareTarget] = useState<{ id: string; name: string } | null>(null);
   const [memberAuthStatus, setMemberAuthStatus] = useState<UserAuthStatus[]>([]);
+  const [paymentMap, setPaymentMap] = useState<Map<string, RecurringPayment>>(new Map());
+  const [linkingPaymentId, setLinkingPaymentId] = useState<string | null>(null);
 
   // Inline edit hook
   const inlineEdit = useInlineEdit<EditFormData>({
@@ -151,6 +154,15 @@ export default function RecurringItems() {
       setAccounts(allAccounts);
       setCategories(allCategories);
       setMemberAuthStatus(authStatuses);
+
+      await window.api.recurringPayments.generate();
+
+      const currentPayments = await window.api.recurringPayments.getForCurrentPeriod();
+      const pMap = new Map<string, RecurringPayment>();
+      for (const p of currentPayments) {
+        pMap.set(p.recurringItemId, p);
+      }
+      setPaymentMap(pMap);
 
       setFormData(prev => ({
         ...prev,
@@ -687,6 +699,65 @@ export default function RecurringItems() {
                       ` (in ${daysUntil} days)`}
                 </div>
               )}
+              {item.enableReminders && item.isActive && (() => {
+                const payment = paymentMap.get(item.id);
+                if (!payment) return null;
+
+                if (payment.status === 'paid') {
+                  return (
+                    <div style={{ marginTop: '6px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                      <span style={{
+                        padding: '2px 8px',
+                        borderRadius: 'var(--radius-full)',
+                        fontSize: '11px',
+                        backgroundColor: 'var(--color-success-bg)',
+                        color: 'var(--color-success)',
+                        fontWeight: 500,
+                      }}>
+                        Paid
+                      </span>
+                      {payment.paidDate && (
+                        <span style={{ fontSize: '12px', color: 'var(--color-text-muted)' }}>
+                          on {formatDate(payment.paidDate)}
+                        </span>
+                      )}
+                    </div>
+                  );
+                } else if (payment.status === 'pending' || payment.status === 'overdue') {
+                  return (
+                    <div style={{ marginTop: '6px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                      <span style={{
+                        padding: '2px 8px',
+                        borderRadius: 'var(--radius-full)',
+                        fontSize: '11px',
+                        backgroundColor: payment.status === 'overdue' ? 'var(--color-danger-bg)' : 'var(--color-warning-bg)',
+                        color: payment.status === 'overdue' ? 'var(--color-danger)' : 'var(--color-warning)',
+                        fontWeight: 500,
+                      }}>
+                        {payment.status === 'overdue' ? 'Overdue' : 'Pending'}
+                      </span>
+                      <button
+                        onClick={async () => {
+                          await window.api.recurringPayments.markPaid(payment.id);
+                          await loadData();
+                        }}
+                        className="btn btn-success"
+                        style={{ padding: '2px 8px', fontSize: '11px' }}
+                      >
+                        Mark Paid
+                      </button>
+                      <button
+                        onClick={() => setLinkingPaymentId(payment.id)}
+                        className="btn btn-secondary"
+                        style={{ padding: '2px 8px', fontSize: '11px' }}
+                      >
+                        Link Transaction
+                      </button>
+                    </div>
+                  );
+                }
+                return null;
+              })()}
             </div>
           </div>
           <div style={{ display: 'flex', gap: '8px' }}>
@@ -1051,6 +1122,17 @@ export default function RecurringItems() {
           entityType={'recurring_item' as EncryptableEntityType}
           entityName={shareTarget.name}
           onClose={() => setShareTarget(null)}
+        />
+      )}
+
+      {linkingPaymentId && (
+        <TransactionPickerModal
+          onSelect={async (transactionId) => {
+            await window.api.recurringPayments.linkTransaction(linkingPaymentId, transactionId);
+            setLinkingPaymentId(null);
+            await loadData();
+          }}
+          onClose={() => setLinkingPaymentId(null)}
         />
       )}
     </div>

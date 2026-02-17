@@ -117,6 +117,17 @@ export interface RecurringPayment {
   createdAt: Date;
 }
 
+export interface RecurringItemRule {
+  id: string;
+  pattern: string;
+  recurringItemId: string;
+  priority: number;
+  amountMin?: number | null;
+  amountMax?: number | null;
+  accountFilter?: string | null;
+  createdAt: Date;
+}
+
 export interface RecurringPaymentWithItem extends RecurringPayment {
   description: string;
   itemType: RecurringItemType;

@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import type { RecurringPaymentWithItem } from '../../shared/types';
 import { useHousehold } from '../contexts/HouseholdContext';
+import TransactionPickerModal from './TransactionPickerModal';
 
 interface CashFlowProjectionPoint {
   date: Date;
@@ -147,9 +148,14 @@ const BillCalendar: React.FC = () => {
   const [selectedDay, setSelectedDay] = useState<CalendarDay | null>(null);
   const [cashFlowExpanded, setCashFlowExpanded] = useState(false);
   const [monthPayments, setMonthPayments] = useState<RecurringPaymentWithItem[]>([]);
+  const [linkingPaymentId, setLinkingPaymentId] = useState<string | null>(null);
 
   useEffect(() => {
-    loadData();
+    const init = async () => {
+      await window.api.recurringPayments.generate();
+      await loadData();
+    };
+    init();
   }, [projectionDays, householdFilter]);
 
   useEffect(() => {
@@ -648,29 +654,60 @@ const BillCalendar: React.FC = () => {
               <div style={{ marginBottom: '16px' }}>
                 <div style={{ fontSize: '12px', color: 'var(--color-text-muted)', marginBottom: '8px' }}>Payments</div>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                  {selectedDay.payments.map((payment) => (
-                    <div
-                      key={payment.id}
-                      style={{
-                        display: 'flex',
-                        justifyContent: 'space-between',
-                        alignItems: 'center',
-                        padding: '8px 12px',
-                        backgroundColor: 'var(--color-bg)',
-                        borderRadius: 'var(--radius-sm)',
-                      }}
-                    >
-                      <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
-                        <span style={{ fontSize: '14px' }}>{payment.name}</span>
-                        <span className={getStatusBadgeClass(payment.status, payment.amountDiffers)}>
-                          {getStatusLabel(payment.status, payment.amountDiffers)}
-                        </span>
+                  {selectedDay.payments.map((payment) => {
+                    const currentPayment = monthPayments.find(p => p.id === payment.id);
+                    return (
+                      <div
+                        key={payment.id}
+                        style={{
+                          display: 'flex',
+                          flexDirection: 'column',
+                          gap: '6px',
+                          padding: '8px 12px',
+                          backgroundColor: 'var(--color-bg)',
+                          borderRadius: 'var(--radius-sm)',
+                        }}
+                      >
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+                            <span style={{ fontSize: '14px' }}>{payment.name}</span>
+                            <span className={getStatusBadgeClass(payment.status, payment.amountDiffers)}>
+                              {getStatusLabel(payment.status, payment.amountDiffers)}
+                            </span>
+                          </div>
+                          <span style={{ fontSize: '14px', fontWeight: 500 }}>
+                            {formatCurrency(payment.amount)}
+                          </span>
+                        </div>
+                        {currentPayment && (payment.status === 'pending' || payment.status === 'overdue') && (
+                          <div style={{ display: 'flex', gap: '6px' }}>
+                            <button
+                              onClick={async () => {
+                                await window.api.recurringPayments.markPaid(currentPayment.id);
+                                await loadMonthPayments();
+                              }}
+                              className="btn btn-success"
+                              style={{ padding: '4px 8px', fontSize: '11px' }}
+                            >
+                              Mark Paid
+                            </button>
+                            <button
+                              onClick={() => setLinkingPaymentId(currentPayment.id)}
+                              className="btn btn-secondary"
+                              style={{ padding: '4px 8px', fontSize: '11px' }}
+                            >
+                              Link Transaction
+                            </button>
+                          </div>
+                        )}
+                        {currentPayment && payment.status === 'paid' && currentPayment.transactionId && (
+                          <div style={{ fontSize: '11px', color: 'var(--color-text-muted)' }}>
+                            Linked to transaction
+                          </div>
+                        )}
                       </div>
-                      <span style={{ fontSize: '14px', fontWeight: 500 }}>
-                        {formatCurrency(payment.amount)}
-                      </span>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               </div>
             )}
@@ -1051,6 +1088,17 @@ const BillCalendar: React.FC = () => {
           </div>
         </div>
       </div>
+
+      {linkingPaymentId && (
+        <TransactionPickerModal
+          onSelect={async (transactionId) => {
+            await window.api.recurringPayments.linkTransaction(linkingPaymentId, transactionId);
+            setLinkingPaymentId(null);
+            await loadMonthPayments();
+          }}
+          onClose={() => setLinkingPaymentId(null)}
+        />
+      )}
     </div>
   );
 };
