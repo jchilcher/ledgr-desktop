@@ -2,6 +2,21 @@
 
 All notable changes to Ledgr will be documented in this file.
 
+## [1.0.3] - 2026-02-16
+
+### Added
+
+- **Recurring payment tracking** — Automatically generates expected payments from active recurring items on startup and when items are created or updated, with pending/overdue/paid status tracking per billing period.
+- **Mark paid and link transactions** — Mark recurring payments as paid directly from the Bill Calendar or Recurring Items views, or link them to an existing transaction via a searchable transaction picker modal.
+- **Recurring item rules** — New "Payment Rules" tab under Recurring Items for pattern-based rules that automatically match imported transactions to recurring items by description, amount range, and account filter.
+- **Auto-match on import** — Imported transactions are automatically matched against recurring item rules during file import, marking the corresponding payment as paid and linking the transaction.
+- **Transaction picker modal** — Reusable modal for searching and selecting transactions by description and account, used by Bill Calendar and Recurring Items for payment linking.
+- **Enhanced automation rules** — Category automation rules now support additional filter conditions (amount range, account filter, income/expense direction) and extra actions (add tag, hide from reports, mark as transfer) beyond category assignment.
+
+### Changed
+
+- **Paycheck budgeting** — Simplified data loading to fetch all budget views in a single call instead of per-stream, improving performance and reliability.
+
 ## [1.0.2] - 2026-02-15
 
 ### Added
