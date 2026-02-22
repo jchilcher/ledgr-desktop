@@ -408,12 +408,9 @@ export class IPCHandlers {
     this.benchmarkService = new BenchmarkService();
 
     this.registerHandlers();
-
-    // Generate recurring payments on startup
-    this.generateRecurringPayments();
   }
 
-  private generateRecurringPayments(): void {
+  generateRecurringPayments(): void {
     try {
       const items = this.db.getActiveRecurringItems();
       const decryptedItems = decryptEntityList(this.db, 'recurring_item', items, this.currentUserId) as RecurringItem[];

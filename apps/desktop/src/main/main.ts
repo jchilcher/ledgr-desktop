@@ -208,9 +208,9 @@ if (!gotTheLock) {
     }
   });
 
-  app.whenReady().then(() => {
+  app.whenReady().then(async () => {
   // Show splash screen immediately
-  createSplashScreen();
+  const splash = createSplashScreen();
 
   // Security: Set Content-Security-Policy headers
   const cspPolicy = isDev
@@ -247,14 +247,16 @@ if (!gotTheLock) {
     }, minutes * 60 * 1000);
   }
 
-  function initializeApp(dbPathArg: string): void {
+  async function initializeApp(dbPathArg: string): Promise<void> {
     // Initialize database
     updateSplashStatus('Loading database...');
     database = BudgetDatabase.createWithSafetyNet(dbPathArg, app.getVersion());
+    await new Promise(r => setImmediate(r));
 
     // Migrate data from legacy database locations if current db is empty
     updateSplashStatus('Checking for data migration...');
     migrateFromLegacyDatabase(dbPathArg);
+    await new Promise(r => setImmediate(r));
 
     // Install default categorization rules if none exist
     updateSplashStatus('Initializing rules...');
@@ -263,6 +265,7 @@ if (!gotTheLock) {
     if (existingRules.length === 0) {
       categorizationEngine.installDefaultRules();
     }
+    await new Promise(r => setImmediate(r));
 
     // Initialize IPC handlers
     updateSplashStatus('Setting up handlers...');
@@ -283,8 +286,13 @@ if (!gotTheLock) {
     return newWindow.id;
   });
 
+  // Wait for splash screen to fully render before blocking with init work
+  await new Promise<void>(resolve => {
+    splash.webContents.once('did-finish-load', resolve);
+  });
+
   // Initialize app (no more encrypted-at-rest database)
-  initializeApp(dbPath);
+  await initializeApp(dbPath);
   resetAutoLockTimer();
 
   // Check if any household member has a password set
@@ -331,6 +339,9 @@ if (!gotTheLock) {
       // Create the main window
       createWindow();
 
+      // Defer recurring payment generation out of the critical startup path
+      setImmediate(() => ipcHandlers?.generateRecurringPayments());
+
       // Remove the one-time handler
       ipcMain.removeHandler('security:unlockMemberStartup');
 
@@ -349,6 +360,9 @@ if (!gotTheLock) {
 
     updateSplashStatus('Loading interface...');
     const mainWindow = createWindow();
+
+    // Defer recurring payment generation out of the critical startup path
+    setImmediate(() => ipcHandlers?.generateRecurringPayments());
 
     // Close splash when main window content is loaded
     mainWindow.webContents.once('did-finish-load', () => {
