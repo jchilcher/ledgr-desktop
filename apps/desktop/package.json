@@ -1,6 +1,6 @@
 {
   "name": "@ledgr/desktop",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "private": true,
   "description": "Privacy-focused desktop application for budget tracking and forecasting",
   "main": "dist/main/main/main.js",

@@ -2,6 +2,14 @@
 
 All notable changes to Ledgr will be documented in this file.
 
+## [1.0.4] - 2026-02-23
+
+### Fixed
+
+- **Startup performance** — Deferred recurring payment generation to after the main window renders, with async initialization and event-loop yields between heavy init steps, improving UI responsiveness during startup.
+- **About dialog URL** — Fixed incorrect URL in the About dialog.
+- **Release notes duplicate link** — Guarded against duplicate Buy Me a Coffee link appearing in release notes.
+
 ## [1.0.3] - 2026-02-16
 
 ### Added
