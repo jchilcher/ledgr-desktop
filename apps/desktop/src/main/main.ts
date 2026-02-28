@@ -94,6 +94,12 @@ function migrateFromLegacyDatabase(currentDbPath: string): void {
     return; // No legacy database found
   }
 
+  // Skip if the legacy path is the same as the current path (e.g., fresh install
+  // where userData already matches the legacy location)
+  if (path.resolve(legacyDbPath) === path.resolve(currentDbPath)) {
+    return;
+  }
+
   // Only migrate if current database has no accounts (i.e., is freshly created)
   const db = new BetterSqlite3(currentDbPath);
   try {
@@ -287,8 +293,13 @@ if (!gotTheLock) {
   });
 
   // Wait for splash screen to fully render before blocking with init work
+  // Also handle load failure to avoid hanging forever if splash.html is missing
   await new Promise<void>(resolve => {
     splash.webContents.once('did-finish-load', resolve);
+    splash.webContents.once('did-fail-load', (_event, _code, description) => {
+      console.error(`[Splash] Failed to load: ${description}`);
+      resolve();
+    });
   });
 
   // Initialize app (no more encrypted-at-rest database)

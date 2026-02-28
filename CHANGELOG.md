@@ -2,6 +2,14 @@
 
 All notable changes to Ledgr will be documented in this file.
 
+## [1.0.5] - 2026-02-27
+
+### Fixed
+
+- **Black screen on fresh install** — Splash screen HTML was copied to the wrong path in the packaged app (`renderer/splash.html` instead of `dist/renderer/splash.html`), causing `ERR_FILE_NOT_FOUND` and an indefinite hang on startup.
+- **Database locked during migration** — Legacy database migration attempted to attach the current database to itself on Windows (where `userData` and the legacy path resolve to the same location), causing "database is locked" errors on every table.
+- **Splash screen hang safety net** — Added a `did-fail-load` handler so the app continues startup even if the splash screen fails to load, instead of hanging forever.
+
 ## [1.0.4] - 2026-02-23
 
 ### Fixed

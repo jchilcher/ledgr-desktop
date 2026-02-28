@@ -30,7 +30,7 @@
     },
     {
       "from": "src/renderer/splash.html",
-      "to": "renderer/splash.html"
+      "to": "dist/renderer/splash.html"
     }
   ],
   "asarUnpack": [
